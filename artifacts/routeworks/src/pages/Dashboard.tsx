@@ -1,13 +1,15 @@
 import { useWallet } from '@/context/WalletContext';
-import { useGetVaultStats, useListVaults, useListActivity } from '@workspace/api-client-react';
+import { useGetVaultStats, useListVaults, useListActivity, getGetVaultStatsQueryKey, getListVaultsQueryKey, getListActivityQueryKey } from '@workspace/api-client-react';
 import { Link } from 'wouter';
 import { ArrowRight, Lock, Split, ArrowUpRight, CheckCircle2, PauseCircle, Layers, FileClock } from 'lucide-react';
 
 export default function Dashboard() {
-  const { address, isConnected, connect } = useWallet();
-  const { data: stats } = useGetVaultStats({ ownerAddress: address || '' }, { query: { enabled: !!address } });
-  const { data: vaults, isLoading: isLoadingVaults } = useListVaults({ ownerAddress: address || '' }, { query: { enabled: !!address } });
-  const { data: activity } = useListActivity({ ownerAddress: address || '', limit: 10 }, { query: { enabled: !!address } });
+  const { address, isConnected, isConnecting, connect } = useWallet();
+  const listVaultsParams = { ownerAddress: address || '' };
+  const listActivityParams = { ownerAddress: address || '', limit: 10 };
+  const { data: stats } = useGetVaultStats({ ownerAddress: address || '' }, { query: { enabled: !!address, queryKey: getGetVaultStatsQueryKey({ ownerAddress: address || '' }) } });
+  const { data: vaults, isLoading: isLoadingVaults } = useListVaults(listVaultsParams, { query: { enabled: !!address, queryKey: getListVaultsQueryKey(listVaultsParams) } });
+  const { data: activity } = useListActivity(listActivityParams, { query: { enabled: !!address, queryKey: getListActivityQueryKey(listActivityParams) } });
 
   if (!isConnected) {
     return (
@@ -20,12 +22,23 @@ export default function Dashboard() {
           <p className="text-muted-foreground mb-8">
             Connect your Stacks wallet to manage programmable vaults, automated distributions, and team treasury flows.
           </p>
-          <button 
+          <button
             onClick={connect}
-            className="w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-3 rounded-md font-medium transition-colors"
+            disabled={isConnecting}
+            className="w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-70 disabled:cursor-not-allowed px-8 py-3 rounded-md font-medium transition-colors inline-flex items-center justify-center gap-2"
           >
-            Connect Wallet
+            {isConnecting ? (
+              <>
+                <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                Connecting…
+              </>
+            ) : (
+              'Connect Wallet'
+            )}
           </button>
+          <p className="text-xs text-muted-foreground mt-4">
+            Compatible with Xverse, Leather, and other Stacks wallets
+          </p>
         </div>
       </div>
     );

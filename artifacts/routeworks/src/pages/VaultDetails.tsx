@@ -10,8 +10,8 @@ export default function VaultDetails() {
   const { address } = useWallet();
   const queryClient = useQueryClient();
   
-  const { data: vault, isLoading } = useGetVault(id, { query: { enabled: !!id && !!address } });
-  const { data: activity } = useGetVaultActivity(id, { query: { enabled: !!id && !!address } });
+  const { data: vault, isLoading } = useGetVault(id, { query: { enabled: !!id && !!address, queryKey: getGetVaultQueryKey(id) } });
+  const { data: activity } = useGetVaultActivity(id, { query: { enabled: !!id && !!address, queryKey: getGetVaultActivityQueryKey(id) } });
   const updateVault = useUpdateVault();
 
   if (isLoading) {

@@ -1,94 +1,142 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { showConnect, userSession, AppConfig, UserSession } from '@stacks/connect';
-import { appDetails, NetworkType } from '../lib/stacks';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  ReactNode,
+} from 'react';
+import {
+  connect as stacksConnect,
+  disconnect as stacksDisconnect,
+  isConnected as stacksIsConnected,
+  getLocalStorage,
+} from '@stacks/connect';
+import type { NetworkType } from '../lib/stacks';
 
 interface WalletContextType {
   address: string | null;
   isConnected: boolean;
   network: NetworkType;
-  connect: () => void;
+  isConnecting: boolean;
+  connect: () => Promise<void>;
   disconnect: () => void;
   switchNetwork: (network: NetworkType) => void;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
-const appConfig = new AppConfig(['store_write', 'publish_data']);
-export const defaultUserSession = new UserSession({ appConfig });
+/** Pick the STX address matching the active network from stored/returned addresses. */
+function pickStxAddress(
+  addresses: Array<{ address: string }>,
+  network: NetworkType
+): string | null {
+  const prefix = network === 'mainnet' ? 'SP' : 'ST';
+  const match = addresses.find((a) => a.address.startsWith(prefix));
+  // Fallback: return the first STX-looking address if prefix doesn't match
+  return match?.address ?? addresses[0]?.address ?? null;
+}
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [network, setNetwork] = useState<NetworkType>('mainnet');
+  const [connected, setConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [network, setNetwork] = useState<NetworkType>(() => {
+    const saved = localStorage.getItem('routeworks-network');
+    return saved === 'testnet' ? 'testnet' : 'mainnet';
+  });
 
+  // Restore session from localStorage on mount
   useEffect(() => {
-    const savedNetwork = localStorage.getItem('routeworks-network');
-    if (savedNetwork === 'mainnet' || savedNetwork === 'testnet') {
-      setNetwork(savedNetwork);
-    }
-
-    if (defaultUserSession.isUserSignedIn()) {
-      const userData = defaultUserSession.loadUserData();
-      const addr = savedNetwork === 'testnet' 
-        ? userData.profile.stxAddress.testnet 
-        : userData.profile.stxAddress.mainnet;
-      setAddress(addr);
-      setIsConnected(true);
-    } else if (defaultUserSession.isSignInPending()) {
-      defaultUserSession.handlePendingSignIn().then(userData => {
-        const addr = network === 'testnet' 
-          ? userData.profile.stxAddress.testnet 
-          : userData.profile.stxAddress.mainnet;
+    if (stacksIsConnected()) {
+      const stored = getLocalStorage();
+      const stxAddresses = stored?.addresses?.stx ?? [];
+      if (stxAddresses.length > 0) {
+        const addr = pickStxAddress(stxAddresses, network);
         setAddress(addr);
-        setIsConnected(true);
+        setConnected(true);
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When network changes while connected, re-derive address from stored data
+  useEffect(() => {
+    if (connected && stacksIsConnected()) {
+      const stored = getLocalStorage();
+      const stxAddresses = stored?.addresses?.stx ?? [];
+      if (stxAddresses.length > 0) {
+        const addr = pickStxAddress(stxAddresses, network);
+        setAddress(addr);
+      }
+    }
+  }, [network, connected]);
+
+  const connect = useCallback(async () => {
+    setIsConnecting(true);
+    try {
+      // `stacksConnect` opens the wallet selector UI (Xverse, Leather, etc.)
+      // and returns { addresses: AddressEntry[] }
+      const result = await stacksConnect({
+        // `forceWalletSelect: false` re-uses the previously chosen wallet if any;
+        // set to true only if you want to always re-prompt for wallet selection
+        forceWalletSelect: false,
+        persistWalletSelect: true,
+        enableLocalStorage: true,
       });
+
+      if (result?.addresses?.length) {
+        const addr = pickStxAddress(result.addresses, network);
+        setAddress(addr);
+        setConnected(true);
+      }
+    } catch (err) {
+      // User dismissed the wallet selector — not an error
+      console.warn('[RouteWorks] Wallet connection cancelled or failed:', err);
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [network]);
+
+  const disconnect = useCallback(() => {
+    stacksDisconnect();
+    setAddress(null);
+    setConnected(false);
+  }, []);
+
+  const switchNetwork = useCallback((newNetwork: NetworkType) => {
+    setNetwork(newNetwork);
+    localStorage.setItem('routeworks-network', newNetwork);
+
+    // Re-derive address for the new network from stored data
+    if (stacksIsConnected()) {
+      const stored = getLocalStorage();
+      const stxAddresses = stored?.addresses?.stx ?? [];
+      if (stxAddresses.length > 0) {
+        const addr = pickStxAddress(stxAddresses, newNetwork);
+        setAddress(addr);
+      }
     }
   }, []);
 
-  const switchNetwork = (newNetwork: NetworkType) => {
-    setNetwork(newNetwork);
-    localStorage.setItem('routeworks-network', newNetwork);
-    if (defaultUserSession.isUserSignedIn()) {
-      const userData = defaultUserSession.loadUserData();
-      const addr = newNetwork === 'testnet' 
-        ? userData.profile.stxAddress.testnet 
-        : userData.profile.stxAddress.mainnet;
-      setAddress(addr);
-    }
-  };
-
-  const connect = () => {
-    showConnect({
-      appDetails,
-      onFinish: () => {
-        const userData = defaultUserSession.loadUserData();
-        const addr = network === 'testnet' 
-          ? userData.profile.stxAddress.testnet 
-          : userData.profile.stxAddress.mainnet;
-        setAddress(addr);
-        setIsConnected(true);
-      },
-      userSession: defaultUserSession,
-    });
-  };
-
-  const disconnect = () => {
-    defaultUserSession.signUserOut();
-    setAddress(null);
-    setIsConnected(false);
-  };
-
   return (
-    <WalletContext.Provider value={{ address, isConnected, network, connect, disconnect, switchNetwork }}>
+    <WalletContext.Provider
+      value={{
+        address,
+        isConnected: connected,
+        network,
+        isConnecting,
+        connect,
+        disconnect,
+        switchNetwork,
+      }}
+    >
       {children}
     </WalletContext.Provider>
   );
 }
 
 export function useWallet() {
-  const context = useContext(WalletContext);
-  if (context === undefined) {
-    throw new Error('useWallet must be used within a WalletProvider');
-  }
-  return context;
+  const ctx = useContext(WalletContext);
+  if (!ctx) throw new Error('useWallet must be used within a WalletProvider');
+  return ctx;
 }

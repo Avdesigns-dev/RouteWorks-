@@ -3,35 +3,36 @@ import { useCreateVault, getListVaultsQueryKey, getGetVaultStatsQueryKey } from 
 import { useState } from 'react';
 import { useLocation, Link } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
-import { z } from 'zod';
 import { useForm, useFieldArray } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { Lock, Split, ArrowLeft, Plus, Trash2, CheckCircle2 } from 'lucide-react';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 
-const lockVaultSchema = z.object({
-  name: z.string().min(1, 'Vault name is required'),
-  description: z.string().optional(),
-  recipientAddress: z.string().min(1, 'Recipient address is required').regex(/^(SP|ST)/, 'Must be a valid Stacks address'),
-  amountStx: z.coerce.number().positive('Amount must be positive'),
-  releaseSchedule: z.enum(['one_time', 'monthly', 'quarterly', 'annually']),
-  durationMonths: z.coerce.number().int().positive('Duration must be positive'),
-});
+// ── Types ────────────────────────────────────────────────────────────────────
 
-const splitVaultSchema = z.object({
-  name: z.string().min(1, 'Vault name is required'),
-  description: z.string().optional(),
-  recipients: z.array(z.object({
-    address: z.string().min(1, 'Address is required').regex(/^(SP|ST)/, 'Must be a valid Stacks address'),
-    percentage: z.coerce.number().positive('Must be positive').max(100, 'Max 100%')
-  })).min(1, 'At least one recipient is required')
-}).refine(data => {
-  const total = data.recipients.reduce((sum, r) => sum + (r.percentage || 0), 0);
-  return Math.abs(total - 100) < 0.01;
-}, {
-  message: 'Percentages must sum to exactly 100%',
-  path: ['recipients']
-});
+interface LockFormValues {
+  name: string;
+  description: string;
+  recipientAddress: string;
+  amountStx: string;
+  releaseSchedule: 'one_time' | 'monthly' | 'quarterly' | 'annually';
+  durationMonths: string;
+}
+
+interface SplitRecipient {
+  address: string;
+  percentage: string;
+}
+
+interface SplitFormValues {
+  name: string;
+  description: string;
+  recipients: SplitRecipient[];
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const STACKS_ADDR = /^(SP|ST)[A-Z0-9]+$/;
+
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function CreateVault() {
   const { address } = useWallet();
@@ -41,11 +42,22 @@ export default function CreateVault() {
   const [vaultType, setVaultType] = useState<'lock' | 'split' | null>(null);
   const createVault = useCreateVault();
 
-  // Redirect if not connected
   if (!address) {
     setLocation('/');
     return null;
   }
+
+  const Stepper = () => (
+    <div className="flex items-center gap-3">
+      {([1, 2, 3] as const).map((s, i) => (
+        <span key={s} className="flex items-center gap-1.5">
+          {i > 0 && <span className={`h-px w-8 ${step >= s ? 'bg-primary' : 'bg-border'}`} />}
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${step >= s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>{s}</span>
+          <span className={`text-sm font-medium ${step >= s ? 'text-foreground' : 'text-muted-foreground'}`}>{['Type', 'Configure', 'Complete'][i]}</span>
+        </span>
+      ))}
+    </div>
+  );
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
@@ -53,24 +65,10 @@ export default function CreateVault() {
         <Link href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6">
           <ArrowLeft className="w-4 h-4" /> Back to Dashboard
         </Link>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${step >= 1 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>1</div>
-            <span className={`text-sm font-medium ${step >= 1 ? 'text-foreground' : 'text-muted-foreground'}`}>Type</span>
-          </div>
-          <div className={`h-px w-8 ${step >= 2 ? 'bg-primary' : 'bg-border'}`} />
-          <div className="flex items-center gap-1.5">
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${step >= 2 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>2</div>
-            <span className={`text-sm font-medium ${step >= 2 ? 'text-foreground' : 'text-muted-foreground'}`}>Configure</span>
-          </div>
-          <div className={`h-px w-8 ${step >= 3 ? 'bg-primary' : 'bg-border'}`} />
-          <div className="flex items-center gap-1.5">
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${step >= 3 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>3</div>
-            <span className={`text-sm font-medium ${step >= 3 ? 'text-foreground' : 'text-muted-foreground'}`}>Complete</span>
-          </div>
-        </div>
+        <Stepper />
       </div>
 
+      {/* ── Step 1: choose type ── */}
       {step === 1 && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
           <div>
@@ -78,7 +76,7 @@ export default function CreateVault() {
             <p className="text-muted-foreground mt-1">Select the vault mechanism that fits your needs.</p>
           </div>
           <div className="grid sm:grid-cols-2 gap-4">
-            <button 
+            <button
               onClick={() => { setVaultType('lock'); setStep(2); }}
               className="text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background group"
             >
@@ -89,7 +87,7 @@ export default function CreateVault() {
               <p className="text-sm text-muted-foreground leading-relaxed">Lock funds and release them on a predefined schedule to a single recipient. Perfect for token vesting and delayed payments.</p>
             </button>
 
-            <button 
+            <button
               onClick={() => { setVaultType('split'); setStep(2); }}
               className="text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background group"
             >
@@ -103,87 +101,90 @@ export default function CreateVault() {
         </div>
       )}
 
+      {/* ── Step 2a: Lock Vault form ── */}
       {step === 2 && vaultType === 'lock' && (
         <div className="animate-in fade-in slide-in-from-bottom-4">
           <div className="mb-6 flex items-center gap-3">
             <button onClick={() => setStep(1)} className="p-2 hover:bg-muted rounded-md transition-colors">
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Configure Lock Vault</h1>
-            </div>
+            <h1 className="text-2xl font-semibold tracking-tight">Configure Lock Vault</h1>
           </div>
-          <LockVaultForm 
+          <LockVaultForm
             onSubmit={(data) => {
               createVault.mutate({
                 data: {
                   name: data.name,
-                  description: data.description,
+                  description: data.description || undefined,
                   type: 'lock',
                   ownerAddress: address,
                   lockDetails: {
                     recipientAddress: data.recipientAddress,
-                    amountStx: data.amountStx,
-                    releaseSchedule: data.releaseSchedule as any,
-                    durationMonths: data.durationMonths
-                  }
-                }
+                    amountStx: Number(data.amountStx),
+                    releaseSchedule: data.releaseSchedule,
+                    durationMonths: Number(data.durationMonths),
+                  },
+                },
               }, {
                 onSuccess: () => {
                   queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
                   queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
                   setStep(3);
-                }
+                },
               });
             }}
             isPending={createVault.isPending}
+            error={createVault.error?.message}
           />
         </div>
       )}
 
+      {/* ── Step 2b: Split Vault form ── */}
       {step === 2 && vaultType === 'split' && (
         <div className="animate-in fade-in slide-in-from-bottom-4">
           <div className="mb-6 flex items-center gap-3">
             <button onClick={() => setStep(1)} className="p-2 hover:bg-muted rounded-md transition-colors">
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Configure Split Vault</h1>
-            </div>
+            <h1 className="text-2xl font-semibold tracking-tight">Configure Split Vault</h1>
           </div>
-          <SplitVaultForm 
+          <SplitVaultForm
             onSubmit={(data) => {
               createVault.mutate({
                 data: {
                   name: data.name,
-                  description: data.description,
+                  description: data.description || undefined,
                   type: 'split',
                   ownerAddress: address,
-                  splitRecipients: data.recipients.map(r => ({
+                  splitRecipients: data.recipients.map((r) => ({
                     address: r.address,
-                    percentage: r.percentage
-                  }))
-                }
+                    percentage: Number(r.percentage),
+                  })),
+                },
               }, {
                 onSuccess: () => {
                   queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
                   queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
                   setStep(3);
-                }
+                },
               });
             }}
             isPending={createVault.isPending}
+            error={createVault.error?.message}
           />
         </div>
       )}
 
+      {/* ── Step 3: Success ── */}
       {step === 3 && (
         <div className="text-center py-12 animate-in fade-in zoom-in-95">
           <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6">
             <CheckCircle2 className="w-10 h-10" />
           </div>
           <h1 className="text-3xl font-semibold mb-2">Vault Created</h1>
-          <p className="text-muted-foreground mb-8">Your {vaultType} vault is successfully configured and active.</p>
+          <p className="text-muted-foreground mb-8">
+            Your {vaultType === 'lock' ? 'Lock' : 'Split'} Vault is successfully configured and active.
+          </p>
           <div className="flex items-center justify-center gap-4">
             <Link href="/" className="px-6 py-2.5 rounded-md border border-input hover:bg-muted font-medium transition-colors">
               Go to Dashboard
@@ -195,265 +196,294 @@ export default function CreateVault() {
   );
 }
 
-function LockVaultForm({ onSubmit, isPending }: { onSubmit: (data: z.infer<typeof lockVaultSchema>) => void, isPending: boolean }) {
-  const form = useForm<z.infer<typeof lockVaultSchema>>({
-    resolver: zodResolver(lockVaultSchema),
+// ── Lock Vault Form ───────────────────────────────────────────────────────────
+
+function LockVaultForm({
+  onSubmit,
+  isPending,
+  error,
+}: {
+  onSubmit: (data: LockFormValues) => void;
+  isPending: boolean;
+  error?: string;
+}) {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<LockFormValues>({
     defaultValues: {
       name: '',
       description: '',
       recipientAddress: '',
-      amountStx: 0,
+      amountStx: '',
       releaseSchedule: 'monthly',
-      durationMonths: 12
-    }
+      durationMonths: '12',
+    },
   });
 
   return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-        <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-          <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
-          <div className="grid gap-6">
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Vault Name</FormLabel>
-                  <FormControl>
-                    <input {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. Founder Vesting" />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="description"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Description (Optional)</FormLabel>
-                  <FormControl>
-                    <textarea {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary min-h-[80px]" placeholder="Details about this vault..." />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
+      {error && (
+        <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
+          {error}
         </div>
+      )}
 
-        <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-          <h2 className="text-lg font-medium border-b border-card-border pb-2">Lock Configuration</h2>
-          <div className="grid gap-6">
-            <FormField
-              control={form.control}
-              name="recipientAddress"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Recipient Stacks Address</FormLabel>
-                  <FormControl>
-                    <input {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="SP..." />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
+        <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
+        <div className="grid gap-6">
+          <Field label="Vault Name" error={errors.name?.message}>
+            <input
+              {...register('name', { required: 'Vault name is required' })}
+              className={inputCls(!!errors.name)}
+              placeholder="e.g. Founder Vesting"
             />
-            <div className="grid sm:grid-cols-2 gap-6">
-              <FormField
-                control={form.control}
-                name="amountStx"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Amount to Lock (STX)</FormLabel>
-                    <FormControl>
-                      <input type="number" step="0.000001" {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="durationMonths"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Duration (Months)</FormLabel>
-                    <FormControl>
-                      <input type="number" {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-            <FormField
-              control={form.control}
-              name="releaseSchedule"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Release Schedule</FormLabel>
-                  <FormControl>
-                    <select {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                      <option value="one_time">One-time at end of duration</option>
-                      <option value="monthly">Monthly linear release</option>
-                      <option value="quarterly">Quarterly release</option>
-                      <option value="annually">Annually</option>
-                    </select>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+          </Field>
+          <Field label="Description (Optional)">
+            <textarea
+              {...register('description')}
+              className={`${inputCls(false)} min-h-[80px]`}
+              placeholder="Details about this vault..."
             />
-          </div>
+          </Field>
         </div>
+      </div>
 
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={isPending}
-            className="bg-primary text-primary-foreground px-8 py-2.5 rounded-md font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            {isPending ? 'Creating Vault...' : 'Create Vault'}
-          </button>
+      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
+        <h2 className="text-lg font-medium border-b border-card-border pb-2">Lock Configuration</h2>
+        <div className="grid gap-6">
+          <Field label="Recipient Stacks Address" error={errors.recipientAddress?.message}>
+            <input
+              {...register('recipientAddress', {
+                required: 'Recipient address is required',
+                pattern: { value: STACKS_ADDR, message: 'Must be a valid Stacks address (SP… or ST…)' },
+              })}
+              className={inputCls(!!errors.recipientAddress)}
+              placeholder="SP…"
+            />
+          </Field>
+          <div className="grid sm:grid-cols-2 gap-6">
+            <Field label="Amount to Lock (STX)" error={errors.amountStx?.message}>
+              <input
+                type="number"
+                step="0.000001"
+                {...register('amountStx', {
+                  required: 'Amount is required',
+                  validate: (v) => Number(v) > 0 || 'Amount must be greater than 0',
+                })}
+                className={inputCls(!!errors.amountStx)}
+                placeholder="0.000000"
+              />
+            </Field>
+            <Field label="Duration (Months)" error={errors.durationMonths?.message}>
+              <input
+                type="number"
+                {...register('durationMonths', {
+                  required: 'Duration is required',
+                  validate: (v) => Number(v) >= 1 || 'Must be at least 1 month',
+                })}
+                className={inputCls(!!errors.durationMonths)}
+              />
+            </Field>
+          </div>
+          <Field label="Release Schedule" error={errors.releaseSchedule?.message}>
+            <select
+              {...register('releaseSchedule', { required: true })}
+              className={inputCls(!!errors.releaseSchedule)}
+            >
+              <option value="one_time">One-time at end of duration</option>
+              <option value="monthly">Monthly linear release</option>
+              <option value="quarterly">Quarterly release</option>
+              <option value="annually">Annually</option>
+            </select>
+          </Field>
         </div>
-      </form>
-    </Form>
+      </div>
+
+      <div className="flex justify-end">
+        <SubmitButton isPending={isPending} label="Create Lock Vault" />
+      </div>
+    </form>
   );
 }
 
-function SplitVaultForm({ onSubmit, isPending }: { onSubmit: (data: z.infer<typeof splitVaultSchema>) => void, isPending: boolean }) {
-  const form = useForm<z.infer<typeof splitVaultSchema>>({
-    resolver: zodResolver(splitVaultSchema),
+// ── Split Vault Form ──────────────────────────────────────────────────────────
+
+function SplitVaultForm({
+  onSubmit,
+  isPending,
+  error,
+}: {
+  onSubmit: (data: SplitFormValues) => void;
+  isPending: boolean;
+  error?: string;
+}) {
+  const {
+    register,
+    handleSubmit,
+    control,
+    watch,
+    setError,
+    formState: { errors },
+  } = useForm<SplitFormValues>({
     defaultValues: {
       name: '',
       description: '',
-      recipients: [{ address: '', percentage: 100 }]
+      recipients: [{ address: '', percentage: '100' }],
+    },
+  });
+
+  const { fields, append, remove } = useFieldArray({ control, name: 'recipients' });
+  const watchedRecipients = watch('recipients');
+  const total = watchedRecipients.reduce((sum, r) => sum + (Number(r.percentage) || 0), 0);
+  const totalOk = Math.abs(total - 100) < 0.01;
+
+  const handleFormSubmit = (data: SplitFormValues) => {
+    const pct = data.recipients.reduce((s, r) => s + Number(r.percentage), 0);
+    if (Math.abs(pct - 100) >= 0.01) {
+      setError('recipients', { message: `Percentages must sum to 100% (currently ${pct.toFixed(2)}%)` });
+      return;
     }
-  });
+    onSubmit(data);
+  };
 
-  const { fields, append, remove } = useFieldArray({
-    control: form.control,
-    name: 'recipients'
-  });
-
-  const watchedRecipients = form.watch('recipients');
-  const totalPercentage = watchedRecipients.reduce((sum, r) => sum + (Number(r.percentage) || 0), 0);
-  
   return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
-        <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-          <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
-          <div className="grid gap-6">
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Vault Name</FormLabel>
-                  <FormControl>
-                    <input {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="e.g. Revenue Split" />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-8">
+      {error && (
+        <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
+          {error}
+        </div>
+      )}
+
+      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
+        <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
+        <div className="grid gap-6">
+          <Field label="Vault Name" error={errors.name?.message}>
+            <input
+              {...register('name', { required: 'Vault name is required' })}
+              className={inputCls(!!errors.name)}
+              placeholder="e.g. Revenue Split"
             />
-            <FormField
-              control={form.control}
-              name="description"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Description (Optional)</FormLabel>
-                  <FormControl>
-                    <textarea {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary min-h-[80px]" placeholder="Details about this vault..." />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+          </Field>
+          <Field label="Description (Optional)">
+            <textarea
+              {...register('description')}
+              className={`${inputCls(false)} min-h-[80px]`}
+              placeholder="Details about this vault..."
             />
-          </div>
+          </Field>
+        </div>
+      </div>
+
+      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
+        <div className="flex items-center justify-between border-b border-card-border pb-2">
+          <h2 className="text-lg font-medium">Recipients &amp; Allocation</h2>
+          <span className={`text-sm font-medium tabular-nums ${totalOk ? 'text-green-500' : 'text-destructive'}`}>
+            {total.toFixed(2)}% / 100%
+          </span>
         </div>
 
-        <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-          <div className="flex items-center justify-between border-b border-card-border pb-2">
-            <h2 className="text-lg font-medium">Recipients & Allocation</h2>
-            <div className={`text-sm font-medium ${Math.abs(totalPercentage - 100) < 0.01 ? 'text-green-500' : 'text-destructive'}`}>
-              Total: {totalPercentage}%
-            </div>
+        {errors.recipients?.message && (
+          <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
+            {errors.recipients.message}
           </div>
-          
-          {form.formState.errors.recipients?.root?.message && (
-            <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
-              {form.formState.errors.recipients.root.message}
-            </div>
-          )}
+        )}
 
-          <div className="space-y-4">
-            {fields.map((field, index) => (
-              <div key={field.id} className="flex items-start gap-4">
-                <div className="flex-1">
-                  <FormField
-                    control={form.control}
-                    name={`recipients.${index}.address`}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormControl>
-                          <input {...field} className="w-full bg-input border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Stacks Address (SP...)" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-                <div className="w-32">
-                  <FormField
-                    control={form.control}
-                    name={`recipients.${index}.percentage`}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormControl>
-                          <div className="relative">
-                            <input type="number" step="0.01" {...field} className="w-full bg-input border border-border rounded-md pl-3 pr-8 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="0" />
-                            <span className="absolute right-3 top-2 text-sm text-muted-foreground">%</span>
-                          </div>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => remove(index)}
-                  disabled={fields.length === 1}
-                  className="p-2 text-muted-foreground hover:text-destructive transition-colors mt-0.5 disabled:opacity-50 disabled:hover:text-muted-foreground"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
+        <div className="space-y-3">
+          {fields.map((field, index) => (
+            <div key={field.id} className="flex items-start gap-3">
+              <div className="flex-1">
+                <input
+                  {...register(`recipients.${index}.address`, {
+                    required: 'Address required',
+                    pattern: { value: STACKS_ADDR, message: 'Must be a valid Stacks address' },
+                  })}
+                  className={inputCls(!!(errors.recipients?.[index]?.address))}
+                  placeholder="Stacks Address (SP… or ST…)"
+                />
+                {errors.recipients?.[index]?.address && (
+                  <p className="text-xs text-destructive mt-1">{errors.recipients[index]?.address?.message}</p>
+                )}
               </div>
-            ))}
-          </div>
-          
-          <button
-            type="button"
-            onClick={() => append({ address: '', percentage: 0 })}
-            className="flex items-center gap-2 text-sm text-primary hover:underline font-medium"
-          >
-            <Plus className="w-4 h-4" /> Add Recipient
-          </button>
+              <div className="w-28">
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    {...register(`recipients.${index}.percentage`, {
+                      required: '%  required',
+                      validate: (v) => Number(v) > 0 || 'Must be > 0',
+                    })}
+                    className={`${inputCls(!!(errors.recipients?.[index]?.percentage))} pr-7`}
+                    placeholder="0"
+                  />
+                  <span className="absolute right-3 top-2 text-sm text-muted-foreground">%</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => remove(index)}
+                disabled={fields.length === 1}
+                className="p-2 text-muted-foreground hover:text-destructive transition-colors mt-0.5 disabled:opacity-30"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            </div>
+          ))}
         </div>
 
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={isPending}
-            className="bg-primary text-primary-foreground px-8 py-2.5 rounded-md font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            {isPending ? 'Creating Vault...' : 'Create Vault'}
-          </button>
-        </div>
-      </form>
-    </Form>
+        <button
+          type="button"
+          onClick={() => append({ address: '', percentage: '0' })}
+          className="flex items-center gap-2 text-sm text-primary hover:underline font-medium"
+        >
+          <Plus className="w-4 h-4" /> Add Recipient
+        </button>
+      </div>
+
+      <div className="flex justify-end">
+        <SubmitButton isPending={isPending} label="Create Split Vault" />
+      </div>
+    </form>
+  );
+}
+
+// ── Shared UI helpers ─────────────────────────────────────────────────────────
+
+function inputCls(hasError: boolean) {
+  return `w-full bg-input border ${hasError ? 'border-destructive' : 'border-border'} rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary`;
+}
+
+function Field({
+  label,
+  error,
+  children,
+}: {
+  label: string;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium">{label}</label>
+      {children}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+function SubmitButton({ isPending, label }: { isPending: boolean; label: string }) {
+  return (
+    <button
+      type="submit"
+      disabled={isPending}
+      className="bg-primary text-primary-foreground px-8 py-2.5 rounded-md font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+    >
+      {isPending && (
+        <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+      )}
+      {isPending ? 'Creating…' : label}
+    </button>
   );
 }

@@ -1,10 +1,30 @@
 import { useWallet } from '@/context/WalletContext';
-import { useCreateVault, getListVaultsQueryKey, getGetVaultStatsQueryKey } from '@workspace/api-client-react';
+import {
+  useCreateVault,
+  getListVaultsQueryKey,
+  getGetVaultStatsQueryKey,
+} from '@workspace/api-client-react';
 import { useState } from 'react';
 import { useLocation, Link } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
-import { useForm, useFieldArray } from 'react-hook-form';
-import { Lock, Split, ArrowLeft, Plus, Trash2, CheckCircle2 } from 'lucide-react';
+import { useForm, useFieldArray, UseFormReturn } from 'react-hook-form';
+import {
+  Lock,
+  Split,
+  ArrowLeft,
+  Plus,
+  Trash2,
+  ArrowRight,
+  CheckCircle2,
+  AlertCircle,
+  Zap,
+  Globe,
+  User,
+  Wallet,
+  ChevronRight,
+  Edit3,
+  Copy,
+} from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +38,7 @@ interface LockFormValues {
 }
 
 interface SplitRecipient {
+  recipientName: string;
   address: string;
   percentage: string;
 }
@@ -28,170 +49,306 @@ interface SplitFormValues {
   recipients: SplitRecipient[];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+type VaultType = 'lock' | 'split';
+type WizardStep = 1 | 2 | 3 | 4;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const STACKS_ADDR = /^(SP|ST)[A-Z0-9]+$/;
 
-// ── Main page ────────────────────────────────────────────────────────────────
+const SCHEDULE_LABELS: Record<string, string> = {
+  one_time: 'One-time at end of duration',
+  monthly: 'Monthly linear release',
+  quarterly: 'Quarterly release',
+  annually: 'Annually',
+};
 
-export default function CreateVault() {
-  const { address } = useWallet();
-  const [, setLocation] = useLocation();
-  const queryClient = useQueryClient();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [vaultType, setVaultType] = useState<'lock' | 'split' | null>(null);
-  const createVault = useCreateVault();
+const RECIPIENT_COLORS = [
+  '#FC6432',
+  '#3B82F6',
+  '#8B5CF6',
+  '#10B981',
+  '#F59E0B',
+  '#EF4444',
+  '#6366F1',
+  '#EC4899',
+];
 
-  if (!address) {
-    setLocation('/');
-    return null;
-  }
+const STEP_LABELS: Record<WizardStep, string> = {
+  1: 'Primitive',
+  2: 'Configure',
+  3: 'Review',
+  4: 'Execute',
+};
 
-  const Stepper = () => (
-    <div className="flex items-center gap-3">
-      {([1, 2, 3] as const).map((s, i) => (
+// ── FlowVault SDK integration point ──────────────────────────────────────────
+// Replace this stub with the actual FlowVault SDK call when ready.
+// e.g.: await flowVaultClient.executeVaultTransaction({ vaultId, type, config })
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function prepareFlowVaultTransaction(_vaultId: number, _type: VaultType): Promise<void> {
+  // TODO: wire FlowVault SDK / smart contract call here
+  // The vaultId from the RouteWorks API is available to pass to the SDK.
+  return Promise.resolve();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function truncateAddr(addr: string | null, pre = 6, post = 4): string {
+  if (!addr) return '—';
+  if (addr.length <= pre + post + 3) return addr;
+  return `${addr.slice(0, pre)}…${addr.slice(-post)}`;
+}
+
+// ── Shared UI ─────────────────────────────────────────────────────────────────
+
+function inputCls(hasError: boolean) {
+  return `w-full bg-input border ${
+    hasError ? 'border-destructive' : 'border-border'
+  } rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary transition-colors`;
+}
+
+function Field({
+  label,
+  error,
+  hint,
+  children,
+}: {
+  label: string;
+  error?: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium">{label}</label>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {children}
+      {error && <p className="text-xs text-destructive mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function SectionCard({
+  title,
+  right,
+  children,
+}: {
+  title: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-card border border-card-border p-6 rounded-xl space-y-5">
+      <div className="flex items-center justify-between border-b border-card-border pb-3">
+        <h2 className="text-base font-semibold">{title}</h2>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ReviewRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-b border-card-border/50 last:border-0">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
+      <span className={`text-sm font-medium text-right ${mono ? 'font-mono text-xs' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+// ── Stepper ───────────────────────────────────────────────────────────────────
+
+function Stepper({ step }: { step: WizardStep }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {([1, 2, 3, 4] as WizardStep[]).map((s, i) => (
         <span key={s} className="flex items-center gap-1.5">
-          {i > 0 && <span className={`h-px w-8 ${step >= s ? 'bg-primary' : 'bg-border'}`} />}
-          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${step >= s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>{s}</span>
-          <span className={`text-sm font-medium ${step >= s ? 'text-foreground' : 'text-muted-foreground'}`}>{['Type', 'Configure', 'Complete'][i]}</span>
+          {i > 0 && (
+            <ChevronRight className={`w-3.5 h-3.5 ${step > s - 1 ? 'text-primary' : 'text-muted-foreground/30'}`} />
+          )}
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium shrink-0 transition-colors ${
+            step > s
+              ? 'bg-primary/20 text-primary'
+              : step === s
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted text-muted-foreground'
+          }`}>
+            {step > s ? <CheckCircle2 className="w-3.5 h-3.5" /> : s}
+          </span>
+          <span className={`text-sm font-medium transition-colors ${
+            step >= s ? 'text-foreground' : 'text-muted-foreground/50'
+          }`}>
+            {STEP_LABELS[s]}
+          </span>
         </span>
       ))}
     </div>
   );
+}
+
+// ── Distribution Bar (Split Preview) ─────────────────────────────────────────
+
+function DistributionBar({ recipients }: { recipients: SplitRecipient[] }) {
+  const total = recipients.reduce((s, r) => s + (Number(r.percentage) || 0), 0);
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
-      <div className="mb-8">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6">
-          <ArrowLeft className="w-4 h-4" /> Back to Dashboard
-        </Link>
-        <Stepper />
+    <div className="space-y-3">
+      {/* Bar */}
+      <div className="h-2.5 rounded-full overflow-hidden flex bg-muted/60 gap-px">
+        {recipients.map((r, i) => {
+          const pct = Number(r.percentage) || 0;
+          if (pct <= 0 || total <= 0) return null;
+          return (
+            <div
+              key={i}
+              style={{ width: `${(pct / Math.max(total, 100)) * 100}%`, backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
+              className="transition-all duration-300 first:rounded-l-full last:rounded-r-full"
+            />
+          );
+        })}
+      </div>
+      {/* Legend */}
+      <div className="space-y-2">
+        {recipients.map((r, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div
+              className="w-2 h-2 rounded-sm shrink-0"
+              style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
+            />
+            <span className="text-xs text-muted-foreground font-mono truncate flex-1 min-w-0">
+              {r.recipientName ? (
+                <span className="not-mono text-foreground font-medium">{r.recipientName} </span>
+              ) : null}
+              {r.address ? truncateAddr(r.address) : <span className="italic opacity-40">No address</span>}
+            </span>
+            <span className="text-xs font-semibold tabular-nums shrink-0">
+              {r.percentage || '0'}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Summary Panel ─────────────────────────────────────────────────────────────
+
+function SummaryPanel({
+  vaultType,
+  lockValues,
+  splitValues,
+  address,
+  network,
+}: {
+  vaultType: VaultType | null;
+  lockValues: LockFormValues;
+  splitValues: SplitFormValues;
+  address: string | null;
+  network: string;
+}) {
+  const isLock = vaultType === 'lock';
+  const name = isLock ? lockValues.name : splitValues.name;
+  const recipientCount = isLock ? 1 : splitValues.recipients.length;
+  const splitTotal = splitValues.recipients.reduce((s, r) => s + (Number(r.percentage) || 0), 0);
+  const splitOk = Math.abs(splitTotal - 100) < 0.01;
+
+  return (
+    <div className="bg-card border border-card-border rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className="bg-primary/5 border-b border-card-border px-5 py-3.5">
+        <p className="text-xs font-semibold text-primary uppercase tracking-wider">Configuration Summary</p>
       </div>
 
-      {/* ── Step 1: choose type ── */}
-      {step === 1 && (
-        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Choose Vault Type</h1>
-            <p className="text-muted-foreground mt-1">Select the vault mechanism that fits your needs.</p>
+      <div className="px-5 py-4 space-y-4">
+        {/* Primitive */}
+        <div className="flex items-center gap-3">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+            isLock ? 'bg-blue-500/10 text-blue-400' : 'bg-purple-500/10 text-purple-400'
+          }`}>
+            {isLock ? <Lock className="w-4 h-4" /> : <Split className="w-4 h-4" />}
           </div>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <button
-              onClick={() => { setVaultType('lock'); setStep(2); }}
-              className="text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background group"
-            >
-              <div className="w-12 h-12 bg-blue-500/10 text-blue-400 rounded-lg flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                <Lock className="w-6 h-6" />
-              </div>
-              <h3 className="font-semibold text-lg mb-2">Lock Vault</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">Lock funds and release them on a predefined schedule to a single recipient. Perfect for token vesting and delayed payments.</p>
-            </button>
-
-            <button
-              onClick={() => { setVaultType('split'); setStep(2); }}
-              className="text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background group"
-            >
-              <div className="w-12 h-12 bg-purple-500/10 text-purple-400 rounded-lg flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                <Split className="w-6 h-6" />
-              </div>
-              <h3 className="font-semibold text-lg mb-2">Split Vault</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">Automatically distribute incoming funds to multiple recipients by percentage. Ideal for revenue sharing and team treasuries.</p>
-            </button>
+          <div className="min-w-0">
+            <p className="text-xs text-muted-foreground">Primitive</p>
+            <p className="text-sm font-semibold">{isLock ? 'Lock Vault' : 'Split Vault'}</p>
           </div>
         </div>
-      )}
 
-      {/* ── Step 2a: Lock Vault form ── */}
-      {step === 2 && vaultType === 'lock' && (
-        <div className="animate-in fade-in slide-in-from-bottom-4">
-          <div className="mb-6 flex items-center gap-3">
-            <button onClick={() => setStep(1)} className="p-2 hover:bg-muted rounded-md transition-colors">
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h1 className="text-2xl font-semibold tracking-tight">Configure Lock Vault</h1>
-          </div>
-          <LockVaultForm
-            onSubmit={(data) => {
-              createVault.mutate({
-                data: {
-                  name: data.name,
-                  description: data.description || undefined,
-                  type: 'lock',
-                  ownerAddress: address,
-                  lockDetails: {
-                    recipientAddress: data.recipientAddress,
-                    amountStx: Number(data.amountStx),
-                    releaseSchedule: data.releaseSchedule,
-                    durationMonths: Number(data.durationMonths),
-                  },
-                },
-              }, {
-                onSuccess: () => {
-                  queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
-                  queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
-                  setStep(3);
-                },
-              });
-            }}
-            isPending={createVault.isPending}
-            error={createVault.error?.message}
-          />
-        </div>
-      )}
+        <div className="border-t border-card-border/50" />
 
-      {/* ── Step 2b: Split Vault form ── */}
-      {step === 2 && vaultType === 'split' && (
-        <div className="animate-in fade-in slide-in-from-bottom-4">
-          <div className="mb-6 flex items-center gap-3">
-            <button onClick={() => setStep(1)} className="p-2 hover:bg-muted rounded-md transition-colors">
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h1 className="text-2xl font-semibold tracking-tight">Configure Split Vault</h1>
-          </div>
-          <SplitVaultForm
-            onSubmit={(data) => {
-              createVault.mutate({
-                data: {
-                  name: data.name,
-                  description: data.description || undefined,
-                  type: 'split',
-                  ownerAddress: address,
-                  splitRecipients: data.recipients.map((r) => ({
-                    address: r.address,
-                    percentage: Number(r.percentage),
-                  })),
-                },
-              }, {
-                onSuccess: () => {
-                  queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
-                  queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
-                  setStep(3);
-                },
-              });
-            }}
-            isPending={createVault.isPending}
-            error={createVault.error?.message}
-          />
-        </div>
-      )}
-
-      {/* ── Step 3: Success ── */}
-      {step === 3 && (
-        <div className="text-center py-12 animate-in fade-in zoom-in-95">
-          <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6">
-            <CheckCircle2 className="w-10 h-10" />
-          </div>
-          <h1 className="text-3xl font-semibold mb-2">Vault Created</h1>
-          <p className="text-muted-foreground mb-8">
-            Your {vaultType === 'lock' ? 'Lock' : 'Split'} Vault is successfully configured and active.
+        {/* Routing Name */}
+        <div>
+          <p className="text-xs text-muted-foreground mb-0.5">Routing Name</p>
+          <p className="text-sm font-medium truncate">
+            {name || <span className="text-muted-foreground/40 italic">Untitled</span>}
           </p>
-          <div className="flex items-center justify-center gap-4">
-            <Link href="/" className="px-6 py-2.5 rounded-md border border-input hover:bg-muted font-medium transition-colors">
-              Go to Dashboard
-            </Link>
+        </div>
+
+        {/* Lock-specific */}
+        {isLock && (
+          <>
+            <div>
+              <p className="text-xs text-muted-foreground mb-0.5">Amount</p>
+              <p className="text-sm font-semibold">
+                {lockValues.amountStx ? (
+                  <><span className="text-foreground">{lockValues.amountStx}</span> <span className="text-muted-foreground text-xs">STX</span></>
+                ) : (
+                  <span className="text-muted-foreground/40 italic">Not set</span>
+                )}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-0.5">Recipient</p>
+              <p className="text-xs font-mono truncate">
+                {lockValues.recipientAddress || <span className="text-muted-foreground/40 italic not-mono">Not set</span>}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-0.5">Schedule</p>
+              <p className="text-sm">{SCHEDULE_LABELS[lockValues.releaseSchedule] ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-0.5">Duration</p>
+              <p className="text-sm">
+                {lockValues.durationMonths ? `${lockValues.durationMonths} months` : '—'}
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* Split-specific */}
+        {!isLock && (
+          <>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Recipients ({recipientCount})</p>
+              <DistributionBar recipients={splitValues.recipients} />
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">Total Allocation</p>
+              <span className={`text-sm font-semibold tabular-nums ${splitOk ? 'text-green-500' : 'text-destructive'}`}>
+                {splitTotal.toFixed(splitTotal % 1 === 0 ? 0 : 2)}%
+                {!splitOk && <span className="text-xs ml-1">(needs 100%)</span>}
+              </span>
+            </div>
+          </>
+        )}
+
+        <div className="border-t border-card-border/50" />
+
+        {/* Network & Wallet */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Globe className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <p className="text-xs text-muted-foreground">Network</p>
+            <p className="text-xs font-medium ml-auto capitalize">{network}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Wallet className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <p className="text-xs text-muted-foreground">Creator</p>
+            <p className="text-xs font-mono ml-auto">{truncateAddr(address)}</p>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -199,61 +356,54 @@ export default function CreateVault() {
 // ── Lock Vault Form ───────────────────────────────────────────────────────────
 
 function LockVaultForm({
-  onSubmit,
-  isPending,
-  error,
+  form,
+  onNext,
+  onBack,
+  apiError,
 }: {
-  onSubmit: (data: LockFormValues) => void;
-  isPending: boolean;
-  error?: string;
+  form: UseFormReturn<LockFormValues>;
+  onNext: () => void;
+  onBack: () => void;
+  apiError?: string;
 }) {
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<LockFormValues>({
-    defaultValues: {
-      name: '',
-      description: '',
-      recipientAddress: '',
-      amountStx: '',
-      releaseSchedule: 'monthly',
-      durationMonths: '12',
-    },
-  });
+  const { register, handleSubmit, formState: { errors } } = form;
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
-      {error && (
-        <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
-          {error}
+    <form onSubmit={handleSubmit(onNext)} className="space-y-5">
+      {apiError && (
+        <div className="flex items-start gap-3 p-3 bg-destructive/10 text-destructive text-sm rounded-lg border border-destructive/20">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          {apiError}
         </div>
       )}
 
-      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-        <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
-        <div className="grid gap-6">
-          <Field label="Vault Name" error={errors.name?.message}>
+      <SectionCard title="General Details">
+        <div className="space-y-5">
+          <Field label="Routing Name" error={errors.name?.message}>
             <input
-              {...register('name', { required: 'Vault name is required' })}
+              {...register('name', { required: 'Routing name is required' })}
               className={inputCls(!!errors.name)}
               placeholder="e.g. Founder Vesting"
+              autoFocus
             />
           </Field>
-          <Field label="Description (Optional)">
+          <Field label="Description" hint="Optional — describe what this routing configuration does">
             <textarea
               {...register('description')}
-              className={`${inputCls(false)} min-h-[80px]`}
-              placeholder="Details about this vault..."
+              className={`${inputCls(false)} min-h-[80px] resize-none`}
+              placeholder="Details about this vault…"
             />
           </Field>
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-        <h2 className="text-lg font-medium border-b border-card-border pb-2">Lock Configuration</h2>
-        <div className="grid gap-6">
-          <Field label="Recipient Stacks Address" error={errors.recipientAddress?.message}>
+      <SectionCard title="Lock Configuration">
+        <div className="space-y-5">
+          <Field
+            label="Recipient Stacks Address"
+            error={errors.recipientAddress?.message}
+            hint="Funds will be released to this address on the configured schedule"
+          >
             <input
               {...register('recipientAddress', {
                 required: 'Recipient address is required',
@@ -261,32 +411,43 @@ function LockVaultForm({
               })}
               className={inputCls(!!errors.recipientAddress)}
               placeholder="SP…"
+              spellCheck={false}
             />
           </Field>
-          <div className="grid sm:grid-cols-2 gap-6">
+
+          <div className="grid sm:grid-cols-2 gap-5">
             <Field label="Amount to Lock (STX)" error={errors.amountStx?.message}>
-              <input
-                type="number"
-                step="0.000001"
-                {...register('amountStx', {
-                  required: 'Amount is required',
-                  validate: (v) => Number(v) > 0 || 'Amount must be greater than 0',
-                })}
-                className={inputCls(!!errors.amountStx)}
-                placeholder="0.000000"
-              />
+              <div className="relative">
+                <input
+                  type="number"
+                  step="0.000001"
+                  min="0"
+                  {...register('amountStx', {
+                    required: 'Amount is required',
+                    validate: (v) => Number(v) > 0 || 'Amount must be greater than 0',
+                  })}
+                  className={`${inputCls(!!errors.amountStx)} pr-12`}
+                  placeholder="0.000000"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-medium">STX</span>
+              </div>
             </Field>
-            <Field label="Duration (Months)" error={errors.durationMonths?.message}>
-              <input
-                type="number"
-                {...register('durationMonths', {
-                  required: 'Duration is required',
-                  validate: (v) => Number(v) >= 1 || 'Must be at least 1 month',
-                })}
-                className={inputCls(!!errors.durationMonths)}
-              />
+            <Field label="Duration" error={errors.durationMonths?.message}>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="1"
+                  {...register('durationMonths', {
+                    required: 'Duration is required',
+                    validate: (v) => Number(v) >= 1 || 'Must be at least 1 month',
+                  })}
+                  className={`${inputCls(!!errors.durationMonths)} pr-16`}
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-medium">months</span>
+              </div>
             </Field>
           </div>
+
           <Field label="Release Schedule" error={errors.releaseSchedule?.message}>
             <select
               {...register('releaseSchedule', { required: true })}
@@ -299,10 +460,22 @@ function LockVaultForm({
             </select>
           </Field>
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="flex justify-end">
-        <SubmitButton isPending={isPending} label="Create Lock Vault" />
+      <div className="flex items-center justify-between pt-1">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back
+        </button>
+        <button
+          type="submit"
+          className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          Review Configuration <ArrowRight className="w-4 h-4" />
+        </button>
       </div>
     </form>
   );
@@ -311,13 +484,15 @@ function LockVaultForm({
 // ── Split Vault Form ──────────────────────────────────────────────────────────
 
 function SplitVaultForm({
-  onSubmit,
-  isPending,
-  error,
+  form,
+  onNext,
+  onBack,
+  apiError,
 }: {
-  onSubmit: (data: SplitFormValues) => void;
-  isPending: boolean;
-  error?: string;
+  form: UseFormReturn<SplitFormValues>;
+  onNext: () => void;
+  onBack: () => void;
+  apiError?: string;
 }) {
   const {
     register,
@@ -326,13 +501,7 @@ function SplitVaultForm({
     watch,
     setError,
     formState: { errors },
-  } = useForm<SplitFormValues>({
-    defaultValues: {
-      name: '',
-      description: '',
-      recipients: [{ address: '', percentage: '100' }],
-    },
-  });
+  } = form;
 
   const { fields, append, remove } = useFieldArray({ control, name: 'recipients' });
   const watchedRecipients = watch('recipients');
@@ -342,148 +511,733 @@ function SplitVaultForm({
   const handleFormSubmit = (data: SplitFormValues) => {
     const pct = data.recipients.reduce((s, r) => s + Number(r.percentage), 0);
     if (Math.abs(pct - 100) >= 0.01) {
-      setError('recipients', { message: `Percentages must sum to 100% (currently ${pct.toFixed(2)}%)` });
+      setError('recipients', {
+        message: `Allocations must total 100% — currently ${pct.toFixed(2)}%`,
+      });
       return;
     }
-    onSubmit(data);
+    onNext();
   };
 
   return (
-    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-8">
-      {error && (
-        <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
-          {error}
+    <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-5">
+      {apiError && (
+        <div className="flex items-start gap-3 p-3 bg-destructive/10 text-destructive text-sm rounded-lg border border-destructive/20">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          {apiError}
         </div>
       )}
 
-      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-        <h2 className="text-lg font-medium border-b border-card-border pb-2">General Details</h2>
-        <div className="grid gap-6">
-          <Field label="Vault Name" error={errors.name?.message}>
+      <SectionCard title="General Details">
+        <div className="space-y-5">
+          <Field label="Routing Name" error={errors.name?.message}>
             <input
-              {...register('name', { required: 'Vault name is required' })}
+              {...register('name', { required: 'Routing name is required' })}
               className={inputCls(!!errors.name)}
-              placeholder="e.g. Revenue Split"
+              placeholder="e.g. Revenue Share"
+              autoFocus
             />
           </Field>
-          <Field label="Description (Optional)">
+          <Field label="Description" hint="Optional — describe what this routing configuration does">
             <textarea
               {...register('description')}
-              className={`${inputCls(false)} min-h-[80px]`}
-              placeholder="Details about this vault..."
+              className={`${inputCls(false)} min-h-[80px] resize-none`}
+              placeholder="Details about this vault…"
             />
           </Field>
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="bg-card border border-card-border p-6 rounded-xl space-y-6">
-        <div className="flex items-center justify-between border-b border-card-border pb-2">
-          <h2 className="text-lg font-medium">Recipients &amp; Allocation</h2>
-          <span className={`text-sm font-medium tabular-nums ${totalOk ? 'text-green-500' : 'text-destructive'}`}>
-            {total.toFixed(2)}% / 100%
-          </span>
-        </div>
-
-        {errors.recipients?.message && (
-          <div className="p-3 bg-destructive/10 text-destructive text-sm rounded-md border border-destructive/20">
-            {errors.recipients.message}
+      <SectionCard
+        title="Recipients & Allocation"
+        right={
+          <div className={`text-sm font-semibold tabular-nums px-2.5 py-1 rounded-md ${
+            totalOk
+              ? 'bg-green-500/10 text-green-500'
+              : 'bg-destructive/10 text-destructive'
+          }`}>
+            {total.toFixed(total % 1 === 0 ? 0 : 2)}% / 100%
           </div>
-        )}
-
-        <div className="space-y-3">
-          {fields.map((field, index) => (
-            <div key={field.id} className="flex items-start gap-3">
-              <div className="flex-1">
-                <input
-                  {...register(`recipients.${index}.address`, {
-                    required: 'Address required',
-                    pattern: { value: STACKS_ADDR, message: 'Must be a valid Stacks address' },
-                  })}
-                  className={inputCls(!!(errors.recipients?.[index]?.address))}
-                  placeholder="Stacks Address (SP… or ST…)"
-                />
-                {errors.recipients?.[index]?.address && (
-                  <p className="text-xs text-destructive mt-1">{errors.recipients[index]?.address?.message}</p>
-                )}
-              </div>
-              <div className="w-28">
-                <div className="relative">
-                  <input
-                    type="number"
-                    step="0.01"
-                    {...register(`recipients.${index}.percentage`, {
-                      required: '%  required',
-                      validate: (v) => Number(v) > 0 || 'Must be > 0',
-                    })}
-                    className={`${inputCls(!!(errors.recipients?.[index]?.percentage))} pr-7`}
-                    placeholder="0"
-                  />
-                  <span className="absolute right-3 top-2 text-sm text-muted-foreground">%</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => remove(index)}
-                disabled={fields.length === 1}
-                className="p-2 text-muted-foreground hover:text-destructive transition-colors mt-0.5 disabled:opacity-30"
-              >
-                <Trash2 className="w-5 h-5" />
-              </button>
+        }
+      >
+        <div className="space-y-4">
+          {errors.recipients?.message && (
+            <div className="flex items-start gap-2 p-3 bg-destructive/10 text-destructive text-sm rounded-lg border border-destructive/20">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              {errors.recipients.message}
             </div>
-          ))}
-        </div>
+          )}
 
+          <div className="space-y-3">
+            {fields.map((field, index) => {
+              const color = RECIPIENT_COLORS[index % RECIPIENT_COLORS.length];
+              return (
+                <div key={field.id} className="bg-background/40 border border-border/50 rounded-lg p-3.5 space-y-3">
+                  {/* Recipient header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Recipient {index + 1}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => remove(index)}
+                      disabled={fields.length === 1}
+                      className="p-1 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-25 rounded"
+                      title="Remove recipient"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Name (optional) */}
+                  <div>
+                    <input
+                      {...register(`recipients.${index}.recipientName`)}
+                      className={inputCls(false)}
+                      placeholder="Recipient name (optional)"
+                    />
+                  </div>
+
+                  {/* Address + Percentage */}
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <input
+                        {...register(`recipients.${index}.address`, {
+                          required: 'Address required',
+                          pattern: {
+                            value: STACKS_ADDR,
+                            message: 'Must be a valid Stacks address (SP… or ST…)',
+                          },
+                        })}
+                        className={inputCls(!!(errors.recipients?.[index]?.address))}
+                        placeholder="SP… or ST… address"
+                        spellCheck={false}
+                      />
+                      {errors.recipients?.[index]?.address && (
+                        <p className="text-xs text-destructive mt-1">
+                          {errors.recipients[index]?.address?.message}
+                        </p>
+                      )}
+                    </div>
+                    <div className="w-24 shrink-0">
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0.01"
+                          max="100"
+                          {...register(`recipients.${index}.percentage`, {
+                            required: 'Required',
+                            validate: (v) => Number(v) > 0 || 'Must be > 0',
+                          })}
+                          className={`${inputCls(!!(errors.recipients?.[index]?.percentage))} pr-6 text-right`}
+                          placeholder="0"
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">%</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => append({ recipientName: '', address: '', percentage: '' })}
+            className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 font-medium transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Add Recipient
+          </button>
+
+          {/* Live distribution preview */}
+          {watchedRecipients.some((r) => r.address || r.percentage) && (
+            <div className="bg-background/30 border border-border/40 rounded-lg p-4 space-y-2.5">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Live Distribution</p>
+              <DistributionBar recipients={watchedRecipients} />
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      <div className="flex items-center justify-between pt-1">
         <button
           type="button"
-          onClick={() => append({ address: '', percentage: '0' })}
-          className="flex items-center gap-2 text-sm text-primary hover:underline font-medium"
+          onClick={onBack}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
         >
-          <Plus className="w-4 h-4" /> Add Recipient
+          <ArrowLeft className="w-4 h-4" /> Back
         </button>
-      </div>
-
-      <div className="flex justify-end">
-        <SubmitButton isPending={isPending} label="Create Split Vault" />
+        <button
+          type="submit"
+          className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          Review Configuration <ArrowRight className="w-4 h-4" />
+        </button>
       </div>
     </form>
   );
 }
 
-// ── Shared UI helpers ─────────────────────────────────────────────────────────
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
-function inputCls(hasError: boolean) {
-  return `w-full bg-input border ${hasError ? 'border-destructive' : 'border-border'} rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary`;
-}
+export default function CreateVault() {
+  const { address, network } = useWallet();
+  const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
 
-function Field({
-  label,
-  error,
-  children,
-}: {
-  label: string;
-  error?: string;
-  children: React.ReactNode;
-}) {
+  const [step, setStep] = useState<WizardStep>(1);
+  const [vaultType, setVaultType] = useState<VaultType | null>(null);
+  const [createdVaultId, setCreatedVaultId] = useState<number | null>(null);
+  const [executeError, setExecuteError] = useState<string | null>(null);
+
+  // Lift both forms to parent so state survives step navigation
+  const lockForm = useForm<LockFormValues>({
+    defaultValues: {
+      name: '',
+      description: '',
+      recipientAddress: '',
+      amountStx: '',
+      releaseSchedule: 'monthly',
+      durationMonths: '12',
+    },
+  });
+  const splitForm = useForm<SplitFormValues>({
+    defaultValues: {
+      name: '',
+      description: '',
+      recipients: [{ recipientName: '', address: '', percentage: '100' }],
+    },
+  });
+
+  // Live-watch for the summary panel
+  const lockValues = lockForm.watch();
+  const splitValues = splitForm.watch();
+
+  const createVault = useCreateVault();
+
+  if (!address) {
+    setLocation('/');
+    return null;
+  }
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
+  const handleSelectPrimitive = (type: VaultType) => {
+    setVaultType(type);
+    setStep(2);
+  };
+
+  const handleConfigureNext = () => setStep(3);
+
+  const handleBackToConfig = () => setStep(2);
+
+  const handleConfirmExecute = () => {
+    setExecuteError(null);
+    const isLock = vaultType === 'lock';
+
+    const payload = isLock
+      ? {
+          name: lockValues.name,
+          description: lockValues.description || undefined,
+          type: 'lock' as const,
+          ownerAddress: address,
+          lockDetails: {
+            recipientAddress: lockValues.recipientAddress,
+            amountStx: Number(lockValues.amountStx),
+            releaseSchedule: lockValues.releaseSchedule,
+            durationMonths: Number(lockValues.durationMonths),
+          },
+        }
+      : {
+          name: splitValues.name,
+          description: splitValues.description || undefined,
+          type: 'split' as const,
+          ownerAddress: address,
+          splitRecipients: splitValues.recipients.map((r) => ({
+            address: r.address,
+            percentage: Number(r.percentage),
+          })),
+        };
+
+    createVault.mutate(
+      { data: payload },
+      {
+        onSuccess: async (data) => {
+          queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
+          const vaultId = (data as { id?: number }).id ?? null;
+          setCreatedVaultId(vaultId);
+          // FlowVault SDK integration point — currently a stub
+          if (vaultId) {
+            await prepareFlowVaultTransaction(vaultId, vaultType!).catch(console.error);
+          }
+          setStep(4);
+        },
+        onError: (err) => {
+          setExecuteError(err?.message ?? 'Failed to create routing configuration. Please try again.');
+        },
+      }
+    );
+  };
+
+  // ── Step 1: Select Primitive ─────────────────────────────────────────────────
+
+  if (step === 1) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <PageHeader step={step} />
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Select Routing Primitive</h1>
+            <p className="text-muted-foreground mt-1.5">
+              Choose the FlowVault mechanism that fits your programmable payment needs.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4">
+            {/* Lock Vault */}
+            <button
+              onClick={() => handleSelectPrimitive('lock')}
+              className="group text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-all"
+            >
+              <div className="w-12 h-12 bg-blue-500/10 text-blue-400 rounded-xl flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+                <Lock className="w-6 h-6" />
+              </div>
+              <h3 className="font-semibold text-lg mb-2">🔒 Lock Vault</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                Lock funds and release them according to predefined conditions — schedules, milestones,
+                or time-based triggers.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {['Token vesting', 'Escrow', 'Delayed payment'].map((tag) => (
+                  <span key={tag} className="text-xs bg-blue-500/8 text-blue-400 border border-blue-500/15 px-2 py-0.5 rounded-full">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-5 flex items-center gap-1.5 text-sm font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                Select <ArrowRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            {/* Split Vault */}
+            <button
+              onClick={() => handleSelectPrimitive('split')}
+              className="group text-left bg-card border border-card-border p-6 rounded-xl hover:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-all"
+            >
+              <div className="w-12 h-12 bg-purple-500/10 text-purple-400 rounded-xl flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+                <Split className="w-6 h-6" />
+              </div>
+              <h3 className="font-semibold text-lg mb-2">🔀 Split Vault</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                Automatically distribute funds among multiple recipient wallet addresses using
+                programmable percentage allocations.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {['Revenue sharing', 'Team treasury', 'Royalties'].map((tag) => (
+                  <span key={tag} className="text-xs bg-purple-500/8 text-purple-400 border border-purple-500/15 px-2 py-0.5 rounded-full">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-5 flex items-center gap-1.5 text-sm font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+                Select <ArrowRight className="w-4 h-4" />
+              </div>
+            </button>
+          </div>
+
+          {/* Info strip */}
+          <div className="flex items-start gap-3 p-4 bg-primary/5 border border-primary/15 rounded-xl">
+            <Zap className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+            <p className="text-sm text-muted-foreground">
+              Routing configurations are powered by{' '}
+              <span className="text-foreground font-medium">FlowVault primitives</span>{' '}
+              — programmable, on-chain payment rules built on the Stacks blockchain.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 2: Configure ────────────────────────────────────────────────────────
+
+  if (step === 2) {
+    const isLock = vaultType === 'lock';
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        <PageHeader step={step} />
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Configure {isLock ? 'Lock' : 'Split'} Vault
+          </h1>
+          <p className="text-muted-foreground mt-1.5">
+            {isLock
+              ? 'Set the locking conditions and release schedule for this routing flow.'
+              : 'Define recipients and their allocation percentages for this routing flow.'}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_304px] gap-6 items-start animate-in fade-in slide-in-from-bottom-4">
+          {/* Form */}
+          <div>
+            {isLock ? (
+              <LockVaultForm
+                form={lockForm}
+                onNext={handleConfigureNext}
+                onBack={() => setStep(1)}
+              />
+            ) : (
+              <SplitVaultForm
+                form={splitForm}
+                onNext={handleConfigureNext}
+                onBack={() => setStep(1)}
+              />
+            )}
+          </div>
+
+          {/* Sticky summary */}
+          <div className="lg:sticky lg:top-24">
+            <SummaryPanel
+              vaultType={vaultType}
+              lockValues={lockValues}
+              splitValues={splitValues}
+              address={address}
+              network={network}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 3: Review ───────────────────────────────────────────────────────────
+
+  if (step === 3) {
+    const isLock = vaultType === 'lock';
+    const splitTotal = splitValues.recipients.reduce((s, r) => s + (Number(r.percentage) || 0), 0);
+
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-8 animate-in fade-in slide-in-from-bottom-4">
+        <PageHeader step={step} />
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight">Review Configuration</h1>
+          <p className="text-muted-foreground mt-1.5">
+            Confirm all routing rules before proceeding to execution.
+          </p>
+        </div>
+
+        <div className="space-y-5">
+          {/* Primitive badge */}
+          <div className="flex items-center gap-4 bg-card border border-card-border rounded-xl p-5">
+            <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+              isLock ? 'bg-blue-500/10 text-blue-400' : 'bg-purple-500/10 text-purple-400'
+            }`}>
+              {isLock ? <Lock className="w-5 h-5" /> : <Split className="w-5 h-5" />}
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Routing Primitive</p>
+              <p className="text-lg font-semibold">{isLock ? 'Lock Vault' : 'Split Vault'}</p>
+            </div>
+            <button
+              onClick={handleBackToConfig}
+              className="ml-auto flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors"
+            >
+              <Edit3 className="w-3.5 h-3.5" /> Edit
+            </button>
+          </div>
+
+          {/* General details */}
+          <SectionCard title="Routing Details">
+            <div className="space-y-0">
+              <ReviewRow label="Routing Name" value={isLock ? lockValues.name : splitValues.name} />
+              {(isLock ? lockValues.description : splitValues.description) && (
+                <ReviewRow
+                  label="Description"
+                  value={isLock ? lockValues.description : splitValues.description}
+                />
+              )}
+              <ReviewRow label="Vault Type" value={isLock ? 'Lock Vault' : 'Split Vault'} />
+              <ReviewRow label="Network" value={<span className="capitalize">{network}</span>} />
+              <ReviewRow
+                label="Creator Wallet"
+                value={<span className="font-mono text-xs">{address}</span>}
+              />
+            </div>
+          </SectionCard>
+
+          {/* Lock-specific */}
+          {isLock && (
+            <SectionCard title="Lock Configuration">
+              <div className="space-y-0">
+                <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+                <ReviewRow
+                  label="Recipient Address"
+                  value={<span className="font-mono text-xs break-all">{lockValues.recipientAddress}</span>}
+                />
+                <ReviewRow
+                  label="Release Schedule"
+                  value={SCHEDULE_LABELS[lockValues.releaseSchedule]}
+                />
+                <ReviewRow label="Duration" value={`${lockValues.durationMonths} months`} />
+              </div>
+            </SectionCard>
+          )}
+
+          {/* Split-specific */}
+          {!isLock && (
+            <SectionCard
+              title="Split Configuration"
+              right={
+                <span className={`text-sm font-semibold tabular-nums ${
+                  Math.abs(splitTotal - 100) < 0.01 ? 'text-green-500' : 'text-destructive'
+                }`}>
+                  {splitTotal.toFixed(splitTotal % 1 === 0 ? 0 : 2)}% total
+                </span>
+              }
+            >
+              <div className="space-y-3">
+                {splitValues.recipients.map((r, i) => (
+                  <div key={i} className="flex items-start gap-3 py-2.5 border-b border-card-border/50 last:border-0">
+                    <div
+                      className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
+                      style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
+                    />
+                    <div className="flex-1 min-w-0 space-y-0.5">
+                      {r.recipientName && (
+                        <p className="text-sm font-medium">{r.recipientName}</p>
+                      )}
+                      <p className="text-xs font-mono text-muted-foreground break-all">{r.address}</p>
+                    </div>
+                    <span className="text-sm font-semibold tabular-nums shrink-0">{r.percentage}%</span>
+                  </div>
+                ))}
+
+                {/* Distribution bar in review */}
+                <div className="pt-1">
+                  <DistributionBar recipients={splitValues.recipients} />
+                </div>
+              </div>
+            </SectionCard>
+          )}
+
+          {/* Actions */}
+          <div className="flex items-center justify-between pt-1">
+            <button
+              onClick={handleBackToConfig}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" /> Edit Configuration
+            </button>
+            <button
+              onClick={() => setStep(4)}
+              className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+            >
+              Confirm & Execute <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 4: Confirm & Execute ─────────────────────────────────────────────────
+
+  // Post-execution success state
+  if (step === 4 && createdVaultId !== null) {
+    const isLock = vaultType === 'lock';
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-8 animate-in fade-in zoom-in-95">
+        <div className="text-center space-y-4 py-8">
+          <div className="w-20 h-20 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-10 h-10" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Routing Configuration Created</h1>
+            <p className="text-muted-foreground mt-2 max-w-md mx-auto">
+              Your {isLock ? 'Lock' : 'Split'} Vault routing configuration has been saved
+              and is structurally ready for on-chain FlowVault execution.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3 mb-6">
+          <ReviewRow label="Routing Name" value={isLock ? lockValues.name : splitValues.name} />
+          <ReviewRow label="Vault ID" value={`#${createdVaultId}`} />
+          <ReviewRow label="Type" value={isLock ? 'Lock Vault' : 'Split Vault'} />
+          <ReviewRow label="Network" value={<span className="capitalize">{network}</span>} />
+          <ReviewRow label="Creator" value={<span className="font-mono text-xs">{truncateAddr(address)}</span>} />
+        </div>
+
+        {/* FlowVault integration notice */}
+        <div className="flex items-start gap-3 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl mb-6">
+          <Zap className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-medium text-amber-500 mb-0.5">FlowVault Execution Pending</p>
+            <p className="text-muted-foreground">
+              The routing configuration is saved. On-chain execution via the FlowVault SDK will
+              be wired in the next development phase — no action needed from you.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-center gap-3">
+          <Link
+            href={`/vaults/${createdVaultId}`}
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            View Vault Details <ArrowRight className="w-4 h-4" />
+          </Link>
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+          >
+            Dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Step 4 (pre-execution) ────────────────────────────────────────────────────
+
+  const isLock = vaultType === 'lock';
+  const splitTotal = splitValues.recipients.reduce((s, r) => s + (Number(r.percentage) || 0), 0);
+
   return (
-    <div className="space-y-1.5">
-      <label className="text-sm font-medium">{label}</label>
-      {children}
-      {error && <p className="text-xs text-destructive">{error}</p>}
+    <div className="max-w-3xl mx-auto px-4 py-8 animate-in fade-in slide-in-from-bottom-4">
+      <PageHeader step={step} />
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Confirm & Execute</h1>
+        <p className="text-muted-foreground mt-1.5">
+          Ready to create your routing configuration. Review the final summary below.
+        </p>
+      </div>
+
+      <div className="space-y-5">
+        {/* Status banner */}
+        <div className="flex items-center gap-3 p-4 bg-primary/5 border border-primary/20 rounded-xl">
+          <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
+            <Zap className="w-4 h-4 text-primary" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold">Ready to create routing configuration</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Wallet connected · {isLock ? 'Lock Vault' : 'Split Vault'} · {network}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-green-500 font-medium">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+            Connected
+          </div>
+        </div>
+
+        {/* Final summary */}
+        <SectionCard title="Routing Summary">
+          <div className="space-y-0">
+            <ReviewRow label="Routing Name" value={isLock ? lockValues.name : splitValues.name} />
+            <ReviewRow label="Primitive" value={isLock ? 'Lock Vault' : 'Split Vault'} />
+            {isLock && (
+              <>
+                <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+                <ReviewRow
+                  label="Recipient"
+                  value={<span className="font-mono text-xs">{truncateAddr(lockValues.recipientAddress)}</span>}
+                  mono
+                />
+                <ReviewRow label="Schedule" value={SCHEDULE_LABELS[lockValues.releaseSchedule]} />
+                <ReviewRow label="Duration" value={`${lockValues.durationMonths} months`} />
+              </>
+            )}
+            {!isLock && (
+              <>
+                <ReviewRow label="Recipients" value={`${splitValues.recipients.length} addresses`} />
+                <ReviewRow
+                  label="Total Allocation"
+                  value={
+                    <span className={Math.abs(splitTotal - 100) < 0.01 ? 'text-green-500' : 'text-destructive'}>
+                      {splitTotal.toFixed(splitTotal % 1 === 0 ? 0 : 2)}%
+                    </span>
+                  }
+                />
+              </>
+            )}
+            <ReviewRow label="Network" value={<span className="capitalize">{network}</span>} />
+            <ReviewRow
+              label="Creator Wallet"
+              value={<span className="font-mono text-xs">{truncateAddr(address)}</span>}
+            />
+          </div>
+        </SectionCard>
+
+        {/* Error */}
+        {executeError && (
+          <div className="flex items-start gap-3 p-3 bg-destructive/10 text-destructive text-sm rounded-lg border border-destructive/20">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            {executeError}
+          </div>
+        )}
+
+        {/* FlowVault SDK notice */}
+        <div className="flex items-start gap-3 p-4 bg-muted/30 border border-border/50 rounded-xl">
+          <div className="w-8 h-8 bg-muted rounded-lg flex items-center justify-center shrink-0">
+            <Globe className="w-4 h-4 text-muted-foreground" />
+          </div>
+          <div className="text-sm">
+            <p className="font-medium mb-0.5">FlowVault Integration</p>
+            <p className="text-muted-foreground">
+              Clicking <span className="text-foreground font-medium">Create Routing</span> saves your
+              configuration to the RouteWorks API. On-chain execution via the FlowVault SDK or smart
+              contract will be connected in the next development phase.
+            </p>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-between pt-1">
+          <button
+            onClick={() => setStep(3)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+          <button
+            onClick={handleConfirmExecute}
+            disabled={createVault.isPending}
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-2.5 rounded-md text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[160px] justify-center"
+          >
+            {createVault.isPending ? (
+              <>
+                <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                Creating…
+              </>
+            ) : (
+              <>
+                <Zap className="w-4 h-4" /> Create Routing
+              </>
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function SubmitButton({ isPending, label }: { isPending: boolean; label: string }) {
+// ── Page Header ───────────────────────────────────────────────────────────────
+
+function PageHeader({ step }: { step: WizardStep }) {
   return (
-    <button
-      type="submit"
-      disabled={isPending}
-      className="bg-primary text-primary-foreground px-8 py-2.5 rounded-md font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-2"
-    >
-      {isPending && (
-        <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-      )}
-      {isPending ? 'Creating…' : label}
-    </button>
+    <div className="mb-8 space-y-4">
+      <Link
+        href="/"
+        className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+      </Link>
+      <Stepper step={step} />
+    </div>
   );
 }

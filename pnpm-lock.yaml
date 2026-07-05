@@ -410,6 +410,9 @@ importers:
       '@stacks/network':
         specifier: ^7.5.0
         version: 7.5.0
+      flowvault-sdk:
+        specifier: 0.1.2
+        version: 0.1.2
     devDependencies:
       '@hookform/resolvers':
         specifier: ^3.10.0
@@ -2701,6 +2704,9 @@ packages:
   find-up@8.0.0:
     resolution: {integrity: sha512-JGG8pvDi2C+JxidYdIwQDyS/CgcrIdh18cvgxcBge3wSHRQOrooMD3GlFBcmMJAN9M42SAZjDp5zv1dglJjwww==}
     engines: {node: '>=20'}
+
+  flowvault-sdk@0.1.2:
+    resolution: {integrity: sha512-Vd2zDRPKQ+ELaU1AKpZioBriS6QMX+o7Ty7iHMByC+mK0R5iPmi4zy2TW5bEwxHQj/Jik0IrMUlf3IXErSCBPw==}
 
   for-each@0.3.5:
     resolution: {integrity: sha512-dKx12eRCVIzqCxFGplyFKJMPvLEWgmNtUrpTiJIR5u97zEhRG8ySrtboPHZXx7daLxQVrl643cTzbab2tkQjxg==}
@@ -6485,7 +6491,7 @@ snapshots:
 
   c32check@2.0.0:
     dependencies:
-      '@noble/hashes': 1.1.5
+      '@noble/hashes': 1.8.0
       base-x: 4.0.1
 
   call-bind-apply-helpers@1.0.2:
@@ -6960,6 +6966,13 @@ snapshots:
     dependencies:
       locate-path: 8.0.0
       unicorn-magic: 0.3.0
+
+  flowvault-sdk@0.1.2:
+    dependencies:
+      '@stacks/network': 7.5.0
+      '@stacks/transactions': 7.5.0
+    transitivePeerDependencies:
+      - encoding
 
   for-each@0.3.5:
     dependencies:

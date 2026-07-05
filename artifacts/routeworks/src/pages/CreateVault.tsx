@@ -1,4 +1,5 @@
 import { useWallet } from '@/context/WalletContext';
+import { useFlowVault } from '@/hooks/useFlowVault';
 import {
   useCreateVault,
   getListVaultsQueryKey,
@@ -19,11 +20,10 @@ import {
   AlertCircle,
   Zap,
   Globe,
-  User,
   Wallet,
   ChevronRight,
   Edit3,
-  Copy,
+  WifiOff,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -686,6 +686,8 @@ function SplitVaultForm({
 
 export default function CreateVault() {
   const { address, network } = useWallet();
+  // Phase 3 — wallet guard: verified before any FlowVault transaction
+  const { guard, connect, isConnecting } = useFlowVault();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
@@ -1118,22 +1120,45 @@ export default function CreateVault() {
       </div>
 
       <div className="space-y-5">
-        {/* Status banner */}
-        <div className="flex items-center gap-3 p-4 bg-primary/5 border border-primary/20 rounded-xl">
-          <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
-            <Zap className="w-4 h-4 text-primary" />
+        {/* Phase 3 — Wallet guard status banner */}
+        {guard.isReady ? (
+          <div className="flex items-center gap-3 p-4 bg-primary/5 border border-primary/20 rounded-xl">
+            <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center shrink-0">
+              <Zap className="w-4 h-4 text-primary" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold">Ready to create routing configuration</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Wallet connected · {isLock ? 'Lock Vault' : 'Split Vault'} · {network}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs text-green-500 font-medium shrink-0">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              Verified
+            </div>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold">Ready to create routing configuration</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Wallet connected · {isLock ? 'Lock Vault' : 'Split Vault'} · {network}
-            </p>
+        ) : (
+          <div className="flex items-center gap-3 p-4 bg-destructive/5 border border-destructive/20 rounded-xl">
+            <div className="w-8 h-8 bg-destructive/10 rounded-lg flex items-center justify-center shrink-0">
+              <WifiOff className="w-4 h-4 text-destructive" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-destructive">Wallet verification failed</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{guard.message}</p>
+            </div>
+            {guard.status === 'not_connected' && (
+              <button
+                type="button"
+                onClick={connect}
+                disabled={isConnecting}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors disabled:opacity-60"
+              >
+                <Wallet className="w-3 h-3" />
+                {isConnecting ? 'Connecting…' : 'Connect'}
+              </button>
+            )}
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-green-500 font-medium">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            Connected
-          </div>
-        </div>
+        )}
 
         {/* Final summary */}
         <SectionCard title="Routing Summary">
@@ -1186,12 +1211,14 @@ export default function CreateVault() {
           <div className="w-8 h-8 bg-muted rounded-lg flex items-center justify-center shrink-0">
             <Globe className="w-4 h-4 text-muted-foreground" />
           </div>
-          <div className="text-sm">
-            <p className="font-medium mb-0.5">FlowVault Integration</p>
+          <div className="text-sm space-y-1">
+            <p className="font-medium">FlowVault Integration — Phase 3 Active</p>
             <p className="text-muted-foreground">
-              Clicking <span className="text-foreground font-medium">Create Routing</span> saves your
-              configuration to the RouteWorks API. On-chain execution via the FlowVault SDK or smart
-              contract will be connected in the next development phase.
+              Wallet verification is active via the FlowVault SDK. Clicking{' '}
+              <span className="text-foreground font-medium">Create Routing</span> saves your
+              configuration to the RouteWorks API. On-chain execution via{' '}
+              <span className="text-foreground font-mono text-xs">flowvault-sdk</span> will be
+              connected in the next phase.
             </p>
           </div>
         </div>
@@ -1206,7 +1233,8 @@ export default function CreateVault() {
           </button>
           <button
             onClick={handleConfirmExecute}
-            disabled={createVault.isPending}
+            disabled={createVault.isPending || !guard.isReady}
+            title={!guard.isReady ? (guard.message ?? 'Wallet not ready') : undefined}
             className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-2.5 rounded-md text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[160px] justify-center"
           >
             {createVault.isPending ? (

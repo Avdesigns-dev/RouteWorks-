@@ -24,7 +24,14 @@ import {
   ChevronRight,
   Edit3,
   WifiOff,
+  ExternalLink,
+  Copy,
+  Check,
+  Loader2,
 } from 'lucide-react';
+import { executeFlowVaultTransaction, type TxPhase, type FlowVaultTxResult, TX_PHASE_MESSAGES } from '@/lib/flowvault/transaction';
+import { isUserRejection, getFlowVaultErrorMessage } from '@/lib/flowvault/errors';
+import type { VaultState } from 'flowvault-sdk';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -81,14 +88,17 @@ const STEP_LABELS: Record<WizardStep, string> = {
   4: 'Execute',
 };
 
-// ── FlowVault SDK integration point ──────────────────────────────────────────
-// Replace this stub with the actual FlowVault SDK call when ready.
-// e.g.: await flowVaultClient.executeVaultTransaction({ vaultId, type, config })
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function prepareFlowVaultTransaction(_vaultId: number, _type: VaultType): Promise<void> {
-  // TODO: wire FlowVault SDK / smart contract call here
-  // The vaultId from the RouteWorks API is available to pass to the SDK.
-  return Promise.resolve();
+// ── Copy helper ───────────────────────────────────────────────────────────────
+
+function useCopy(): [boolean, (text: string) => void] {
+  const [copied, setCopied] = useState(false);
+  const copy = (text: string) => {
+    navigator.clipboard?.writeText(text).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 2000); },
+      () => {}
+    );
+  };
+  return [copied, copy];
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -687,7 +697,7 @@ function SplitVaultForm({
 export default function CreateVault() {
   const { address, network } = useWallet();
   // Phase 3 — wallet guard: verified before any FlowVault transaction
-  const { guard, connect, isConnecting } = useFlowVault();
+  const { guard, getClient, connect, isConnecting } = useFlowVault();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
 
@@ -695,6 +705,12 @@ export default function CreateVault() {
   const [vaultType, setVaultType] = useState<VaultType | null>(null);
   const [createdVaultId, setCreatedVaultId] = useState<number | null>(null);
   const [executeError, setExecuteError] = useState<string | null>(null);
+
+  // Phase 4–8 — FlowVault transaction state
+  const [txPhase, setTxPhase] = useState<TxPhase>('idle');
+  const [txResult, setTxResult] = useState<FlowVaultTxResult | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [chainVaultState, setChainVaultState] = useState<VaultState | null>(null);
 
   // Lift both forms to parent so state survives step navigation
   const lockForm = useForm<LockFormValues>({
@@ -737,8 +753,14 @@ export default function CreateVault() {
 
   const handleBackToConfig = () => setStep(2);
 
-  const handleConfirmExecute = () => {
+  const handleConfirmExecute = async () => {
+    if (!guard.isReady) return;
     setExecuteError(null);
+    setTxError(null);
+    setTxPhase('idle');
+    setTxResult(null);
+    setChainVaultState(null);
+
     const isLock = vaultType === 'lock';
 
     const payload = isLock
@@ -765,25 +787,117 @@ export default function CreateVault() {
           })),
         };
 
-    createVault.mutate(
-      { data: payload },
-      {
-        onSuccess: async (data) => {
-          queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
-          queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
-          const vaultId = (data as { id?: number }).id ?? null;
-          setCreatedVaultId(vaultId);
-          // FlowVault SDK integration point — currently a stub
-          if (vaultId) {
-            await prepareFlowVaultTransaction(vaultId, vaultType!).catch(console.error);
+    // ── Step 1: Persist routing config to RouteWorks API ──────────────────────
+    let vaultId: number;
+    try {
+      const data = await createVault.mutateAsync({ data: payload });
+      queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
+      vaultId = (data as { id?: number }).id!;
+      setCreatedVaultId(vaultId);
+    } catch (err: unknown) {
+      setExecuteError((err as Error)?.message ?? 'Failed to save routing configuration. Please try again.');
+      return;
+    }
+
+    // ── Step 2: Execute FlowVault on-chain transaction ────────────────────────
+    try {
+      const client = getClient();
+
+      const fvParams = isLock
+        ? {
+            type: 'lock' as const,
+            amountStx: Number(lockValues.amountStx),
+            durationMonths: Number(lockValues.durationMonths),
+            walletAddress: address!,
           }
-          setStep(4);
-        },
-        onError: (err) => {
-          setExecuteError(err?.message ?? 'Failed to create routing configuration. Please try again.');
-        },
+        : {
+            type: 'split' as const,
+            recipients: splitValues.recipients.map((r) => ({
+              address: r.address,
+              percentage: Number(r.percentage),
+            })),
+            walletAddress: address!,
+          };
+
+      const result = await executeFlowVaultTransaction(
+        client,
+        fvParams,
+        network,
+        (phase) => setTxPhase(phase)
+      );
+
+      setTxResult(result);
+      setChainVaultState(result.vaultState);
+
+      // Refresh dashboard + vault list with live blockchain data
+      queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
+
+      setStep(4);
+    } catch (err: unknown) {
+      if (isUserRejection(err)) {
+        setTxPhase('rejected');
+        setTxError('Transaction cancelled — you rejected the wallet signature request. You can retry below.');
+      } else {
+        setTxPhase('error');
+        setTxError(getFlowVaultErrorMessage(err));
       }
-    );
+    }
+  };
+
+  /** Retry only the FlowVault transaction — vault record already exists in the API. */
+  const handleRetryTx = async () => {
+    if (!guard.isReady || !createdVaultId) return;
+    setTxError(null);
+    setTxPhase('idle');
+    setTxResult(null);
+    setChainVaultState(null);
+
+    const isLock = vaultType === 'lock';
+
+    try {
+      const client = getClient();
+
+      const fvParams = isLock
+        ? {
+            type: 'lock' as const,
+            amountStx: Number(lockValues.amountStx),
+            durationMonths: Number(lockValues.durationMonths),
+            walletAddress: address!,
+          }
+        : {
+            type: 'split' as const,
+            recipients: splitValues.recipients.map((r) => ({
+              address: r.address,
+              percentage: Number(r.percentage),
+            })),
+            walletAddress: address!,
+          };
+
+      const result = await executeFlowVaultTransaction(
+        client,
+        fvParams,
+        network,
+        (phase) => setTxPhase(phase)
+      );
+
+      setTxResult(result);
+      setChainVaultState(result.vaultState);
+
+      queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
+
+      setStep(4);
+    } catch (err: unknown) {
+      if (isUserRejection(err)) {
+        setTxPhase('rejected');
+        setTxError('Transaction cancelled — you rejected the wallet signature request. You can retry below.');
+      } else {
+        setTxPhase('error');
+        setTxError(getFlowVaultErrorMessage(err));
+      }
+    }
   };
 
   // ── Step 1: Select Primitive ─────────────────────────────────────────────────
@@ -1048,60 +1162,21 @@ export default function CreateVault() {
 
   // ── Step 4: Confirm & Execute ─────────────────────────────────────────────────
 
-  // Post-execution success state
-  if (step === 4 && createdVaultId !== null) {
+  // ── Post-execution success state (Phase 4–8) ─────────────────────────────────
+  // Require txResult (not just createdVaultId) so the success screen only renders
+  // after the FlowVault transaction is confirmed — not the moment the API call returns.
+  if (step === 4 && createdVaultId !== null && txResult !== null) {
     const isLock = vaultType === 'lock';
-    return (
-      <div className="max-w-2xl mx-auto px-4 py-8 animate-in fade-in zoom-in-95">
-        <div className="text-center space-y-4 py-8">
-          <div className="w-20 h-20 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto">
-            <CheckCircle2 className="w-10 h-10" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Routing Configuration Created</h1>
-            <p className="text-muted-foreground mt-2 max-w-md mx-auto">
-              Your {isLock ? 'Lock' : 'Split'} Vault routing configuration has been saved
-              and is structurally ready for on-chain FlowVault execution.
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-card border border-card-border rounded-xl p-5 space-y-3 mb-6">
-          <ReviewRow label="Routing Name" value={isLock ? lockValues.name : splitValues.name} />
-          <ReviewRow label="Vault ID" value={`#${createdVaultId}`} />
-          <ReviewRow label="Type" value={isLock ? 'Lock Vault' : 'Split Vault'} />
-          <ReviewRow label="Network" value={<span className="capitalize">{network}</span>} />
-          <ReviewRow label="Creator" value={<span className="font-mono text-xs">{truncateAddr(address)}</span>} />
-        </div>
-
-        {/* FlowVault integration notice */}
-        <div className="flex items-start gap-3 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl mb-6">
-          <Zap className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-          <div className="text-sm">
-            <p className="font-medium text-amber-500 mb-0.5">FlowVault Execution Pending</p>
-            <p className="text-muted-foreground">
-              The routing configuration is saved. On-chain execution via the FlowVault SDK will
-              be wired in the next development phase — no action needed from you.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-center gap-3">
-          <Link
-            href={`/vaults/${createdVaultId}`}
-            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
-          >
-            View Vault Details <ArrowRight className="w-4 h-4" />
-          </Link>
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
-          >
-            Dashboard
-          </Link>
-        </div>
-      </div>
-    );
+    return <SuccessScreen
+      isLock={isLock}
+      createdVaultId={createdVaultId}
+      lockValues={lockValues}
+      splitValues={splitValues}
+      network={network}
+      address={address}
+      txResult={txResult}
+      chainVaultState={chainVaultState}
+    />;
   }
 
   // ── Step 4 (pre-execution) ────────────────────────────────────────────────────
@@ -1206,49 +1281,244 @@ export default function CreateVault() {
           </div>
         )}
 
-        {/* FlowVault SDK notice */}
-        <div className="flex items-start gap-3 p-4 bg-muted/30 border border-border/50 rounded-xl">
-          <div className="w-8 h-8 bg-muted rounded-lg flex items-center justify-center shrink-0">
-            <Globe className="w-4 h-4 text-muted-foreground" />
+        {/* ── Transaction progress (Phase 7) ── */}
+        {txPhase !== 'idle' && txPhase !== 'rejected' && txPhase !== 'error' && (
+          <div className="flex items-center gap-4 p-4 bg-primary/5 border border-primary/20 rounded-xl">
+            <Loader2 className="w-5 h-5 text-primary animate-spin shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">{TX_PHASE_MESSAGES[txPhase]}</p>
+              <div className="flex items-center gap-1.5 mt-2">
+                {(['preparing', 'signing', 'submitted', 'confirmed'] as TxPhase[]).map((ph, i) => {
+                  const phaseOrder = { preparing: 0, signing: 1, submitted: 2, confirmed: 3 };
+                  const currentOrder = phaseOrder[txPhase as keyof typeof phaseOrder] ?? -1;
+                  const phOrder = phaseOrder[ph as keyof typeof phaseOrder] ?? 0;
+                  return (
+                    <span key={ph} className="flex items-center gap-1">
+                      {i > 0 && <span className="w-4 h-px bg-border" />}
+                      <span className={`w-2 h-2 rounded-full transition-colors ${phOrder < currentOrder ? 'bg-primary' : phOrder === currentOrder ? 'bg-primary animate-pulse' : 'bg-muted-foreground/30'}`} />
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
           </div>
-          <div className="text-sm space-y-1">
-            <p className="font-medium">FlowVault Integration — Phase 3 Active</p>
-            <p className="text-muted-foreground">
-              Wallet verification is active via the FlowVault SDK. Clicking{' '}
-              <span className="text-foreground font-medium">Create Routing</span> saves your
-              configuration to the RouteWorks API. On-chain execution via{' '}
-              <span className="text-foreground font-mono text-xs">flowvault-sdk</span> will be
-              connected in the next phase.
-            </p>
+        )}
+
+        {/* ── Wallet rejection / error with retry (Phase 7) ── */}
+        {(txPhase === 'rejected' || txPhase === 'error') && txError && (
+          <div className="p-4 bg-destructive/8 border border-destructive/20 rounded-xl space-y-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+              <p className="text-sm text-destructive leading-relaxed">{txError}</p>
+            </div>
+            <button
+              onClick={handleRetryTx}
+              disabled={!guard.isReady}
+              className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-primary/80 transition-colors disabled:opacity-50"
+            >
+              <Zap className="w-3.5 h-3.5" /> Retry transaction
+            </button>
           </div>
-        </div>
+        )}
 
         {/* Actions */}
         <div className="flex items-center justify-between pt-1">
           <button
             onClick={() => setStep(3)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+            disabled={createVault.isPending || ['preparing', 'signing', 'submitted'].includes(txPhase)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <ArrowLeft className="w-4 h-4" /> Back
           </button>
           <button
             onClick={handleConfirmExecute}
-            disabled={createVault.isPending || !guard.isReady}
+            disabled={createVault.isPending || !guard.isReady || ['preparing', 'signing', 'submitted'].includes(txPhase)}
             title={!guard.isReady ? (guard.message ?? 'Wallet not ready') : undefined}
-            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-2.5 rounded-md text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[160px] justify-center"
+            className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-2.5 rounded-md text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[200px] justify-center"
           >
             {createVault.isPending ? (
-              <>
-                <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-                Creating…
-              </>
+              <><Loader2 className="w-4 h-4 animate-spin" /> Saving configuration…</>
+            ) : txPhase === 'preparing' ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Preparing…</>
+            ) : txPhase === 'signing' ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Awaiting signature…</>
+            ) : txPhase === 'submitted' ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Submitting…</>
             ) : (
-              <>
-                <Zap className="w-4 h-4" /> Create Routing
-              </>
+              <><Zap className="w-4 h-4" /> Execute FlowVault Routing</>
             )}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Success Screen (Phases 5, 8) ─────────────────────────────────────────────
+
+function SuccessScreen({
+  isLock,
+  createdVaultId,
+  lockValues,
+  splitValues,
+  network,
+  address,
+  txResult,
+  chainVaultState,
+}: {
+  isLock: boolean;
+  createdVaultId: number;
+  lockValues: LockFormValues;
+  splitValues: SplitFormValues;
+  network: string;
+  address: string | null;
+  txResult: FlowVaultTxResult | null;
+  chainVaultState: VaultState | null;
+}) {
+  const [txCopied, copyTxId] = useCopy();
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 py-8 animate-in fade-in zoom-in-95">
+      {/* ── Header ── */}
+      <div className="text-center space-y-4 py-8">
+        <div className="w-20 h-20 bg-primary/10 text-primary rounded-full flex items-center justify-center mx-auto">
+          <CheckCircle2 className="w-10 h-10" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Routing Configured On-Chain</h1>
+          <p className="text-muted-foreground mt-2 max-w-md mx-auto">
+            Your {isLock ? 'Lock' : 'Split'} Vault routing rule is live on Stacks Testnet via the FlowVault SDK.
+          </p>
+        </div>
+      </div>
+
+      {/* ── Transaction data — Phase 8 (Explorer Integration) ── */}
+      {txResult && (
+        <div className="bg-card border border-card-border rounded-xl p-5 mb-4">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-8 h-8 bg-green-500/10 text-green-500 rounded-lg flex items-center justify-center shrink-0">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">FlowVault Transaction Confirmed</p>
+              <p className="text-xs text-muted-foreground">Stacks Testnet · flowvault-sdk · set-routing-rules</p>
+            </div>
+          </div>
+
+          {/* Transaction hash */}
+          <div className="space-y-0">
+            <div className="flex items-start justify-between gap-4 py-2.5 border-b border-card-border/50">
+              <span className="text-sm text-muted-foreground shrink-0">Transaction Hash</span>
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span className="text-xs font-mono break-all">{txResult.txId}</span>
+                <button
+                  onClick={() => copyTxId(txResult.txId)}
+                  title={txCopied ? 'Copied!' : 'Copy transaction hash'}
+                  className="shrink-0 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  {txCopied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </span>
+            </div>
+
+            {/* Explorer link */}
+            <div className="flex items-center justify-between gap-4 py-2.5">
+              <span className="text-sm text-muted-foreground shrink-0">Explorer</span>
+              <a
+                href={txResult.explorerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                View on Hiro Testnet Explorer <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Live blockchain state — Phase 5 ── */}
+      {chainVaultState && (
+        <div className="bg-card border border-card-border rounded-xl p-5 mb-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Live Blockchain State
+          </p>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Total Balance</p>
+              <p className="text-sm font-semibold tabular-nums">
+                {(chainVaultState.totalBalance / 1_000_000).toFixed(2)}
+                <span className="text-muted-foreground text-xs ml-1">USDCx</span>
+              </p>
+            </div>
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Locked</p>
+              <p className="text-sm font-semibold tabular-nums text-blue-400">
+                {(chainVaultState.lockedBalance / 1_000_000).toFixed(2)}
+                <span className="text-xs ml-1">USDCx</span>
+              </p>
+            </div>
+            <div className="text-center p-3 bg-muted/30 rounded-lg">
+              <p className="text-xs text-muted-foreground mb-1">Unlocked</p>
+              <p className="text-sm font-semibold tabular-nums text-green-400">
+                {(chainVaultState.unlockedBalance / 1_000_000).toFixed(2)}
+                <span className="text-xs ml-1">USDCx</span>
+              </p>
+            </div>
+          </div>
+          {chainVaultState.lockUntilBlock > 0 && (
+            <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground border-t border-card-border/50 pt-3">
+              <span>Lock expires at block</span>
+              <span className="font-mono font-medium">{chainVaultState.lockUntilBlock.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span>Current chain block</span>
+            <span className="font-mono">{chainVaultState.currentBlock.toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Split SDK note ── */}
+      {txResult?.splitNote && (
+        <div className="flex items-start gap-3 p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl mb-4">
+          <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-muted-foreground leading-relaxed">{txResult.splitNote}</p>
+        </div>
+      )}
+
+      {/* ── Routing configuration summary ── */}
+      <div className="bg-card border border-card-border rounded-xl p-5 mb-6">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Routing Configuration</p>
+        <div className="space-y-0">
+          <ReviewRow label="Routing Name" value={isLock ? lockValues.name : splitValues.name} />
+          <ReviewRow label="Routing ID" value={`#${createdVaultId}`} />
+          <ReviewRow label="Primitive" value={isLock ? 'Lock Vault' : 'Split Vault'} />
+          <ReviewRow label="Network" value={<span className="capitalize">{network}</span>} />
+          <ReviewRow label="Creator" value={<span className="font-mono text-xs">{truncateAddr(address)}</span>} />
+          {isLock && (
+            <>
+              <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+              <ReviewRow label="Duration" value={`${lockValues.durationMonths} months`} />
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Actions ── */}
+      <div className="flex items-center justify-center gap-3">
+        <Link
+          href={`/vaults/${createdVaultId}`}
+          className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-6 py-2.5 rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          View Routing Details <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md border border-border hover:bg-muted text-sm font-medium transition-colors"
+        >
+          Dashboard
+        </Link>
       </div>
     </div>
   );

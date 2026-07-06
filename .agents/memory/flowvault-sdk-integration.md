@@ -56,14 +56,33 @@ The `network` value (`'testnet'` | `'mainnet'`) comes from `useWallet()` in `Wal
 
 ---
 
+## SDK routing primitives (Phase 4)
+- `client.setRoutingRules({ lockAmount, lockUntilBlock, splitAddress, splitAmount })` — single call, not per-vault
+- Lock vault: `lockAmount = tokenToMicro(amountStx)`, `lockUntilBlock = currentBlock + monthsToBlocks(durationMonths)`, `splitAddress: null`, `splitAmount: 0`
+- Split vault: SDK only accepts **one** split address per call. Use first recipient; document limitation. `splitAmount: tokenToMicro('1')` registers the routing rule.
+- `client.getCurrentBlockHeight(walletAddress)` must be called before computing `lockUntilBlock`
+- `client.getVaultState(walletAddress)` after tx for live state (non-blocking — catch errors, tx is confirmed regardless)
+
+## Transaction state machine (Phase 7) — critical: success gate
+Success screen (`SuccessScreen`) gates on **`txResult !== null`**, not just `createdVaultId !== null`.
+`createdVaultId` is set after API call (before tx); `txResult` is set only after tx confirms.
+Without this gate, the success screen renders while the FlowVault tx is still pending.
+
+**Why:** The API call and FlowVault tx are sequential. Setting `createdVaultId` first (before tx) was the Phase 3 pattern. Adding `txResult !== null` to the success condition was required.
+
+## TxPhase state machine
+`idle → preparing → signing → submitted → confirmed`
+`rejected` / `error` are terminal states shown in-place on the execute screen (not step 4 success).
+`handleRetryTx()` re-runs only the FlowVault tx part (vault record already exists in API).
+
 ## File structure
 ```
 src/lib/flowvault/
-  config.ts    — explorer URLs, monthsToBlocks(), env var constants
-  service.ts   — createFlowVaultClient() factory
-  guard.ts     — verifyWalletReady() pre-transaction checks
-  errors.ts    — getFlowVaultErrorMessage(), isUserRejection()
-  index.ts     — barrel export
+  config.ts       — explorer URLs, monthsToBlocks(), env var constants
+  service.ts      — createFlowVaultClient() factory
+  guard.ts        — verifyWalletReady() pre-transaction checks
+  errors.ts       — getFlowVaultErrorMessage(), isUserRejection()
+  transaction.ts  — executeFlowVaultTransaction(), TxPhase, FlowVaultTxResult
 src/hooks/
   useFlowVault.ts — React hook: guard + getClient() + connect/isConnecting
 ```

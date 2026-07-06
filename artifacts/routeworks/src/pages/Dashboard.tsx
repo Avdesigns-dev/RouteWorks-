@@ -52,7 +52,7 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground mt-1">Manage your vault positions and automated payments.</p>
         </div>
         <Link href="/create-vault" className="inline-flex items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2.5 rounded-md font-medium text-sm transition-colors shadow-sm">
-          Create Vault
+          Create Routing
         </Link>
       </div>
 
@@ -122,10 +122,10 @@ export default function Dashboard() {
               <div className="w-12 h-12 bg-muted/50 rounded-full flex items-center justify-center mb-4 text-muted-foreground">
                 <Lock className="w-5 h-5" />
               </div>
-              <h3 className="text-sm font-medium mb-1">No vaults yet</h3>
-              <p className="text-xs text-muted-foreground mb-4 max-w-sm">Create your first vault to lock funds or set up automated splits.</p>
+              <h3 className="text-sm font-medium mb-1">No routing configurations yet</h3>
+              <p className="text-xs text-muted-foreground mb-4 max-w-sm">Create your first routing configuration to lock funds or set up automated splits via FlowVault.</p>
               <Link href="/create-vault" className="text-sm text-primary font-medium hover:underline">
-                Create Vault
+                Create Routing
               </Link>
             </div>
           )}

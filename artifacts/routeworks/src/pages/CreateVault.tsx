@@ -1,5 +1,6 @@
 import { useWallet } from '@/context/WalletContext';
 import { useFlowVault } from '@/hooks/useFlowVault';
+import { useUsdcxBalance } from '@/hooks/useUsdcxBalance';
 import {
   useCreateVault,
   getListVaultsQueryKey,
@@ -53,6 +54,8 @@ interface SplitRecipient {
 interface SplitFormValues {
   name: string;
   description: string;
+  /** Total USDCx amount to route — used for live allocation preview and balance validation. */
+  totalAmountUsdcx: string;
   recipients: SplitRecipient[];
 }
 
@@ -199,7 +202,13 @@ function Stepper({ step }: { step: WizardStep }) {
 
 // ── Distribution Bar (Split Preview) ─────────────────────────────────────────
 
-function DistributionBar({ recipients }: { recipients: SplitRecipient[] }) {
+function DistributionBar({
+  recipients,
+  totalAmountUsdcx,
+}: {
+  recipients: SplitRecipient[];
+  totalAmountUsdcx?: number | null;
+}) {
   const total = recipients.reduce((s, r) => s + (Number(r.percentage) || 0), 0);
 
   return (
@@ -220,23 +229,33 @@ function DistributionBar({ recipients }: { recipients: SplitRecipient[] }) {
       </div>
       {/* Legend */}
       <div className="space-y-2">
-        {recipients.map((r, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <div
-              className="w-2 h-2 rounded-sm shrink-0"
-              style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
-            />
-            <span className="text-xs text-muted-foreground font-mono truncate flex-1 min-w-0">
-              {r.recipientName ? (
-                <span className="not-mono text-foreground font-medium">{r.recipientName} </span>
-              ) : null}
-              {r.address ? truncateAddr(r.address) : <span className="italic opacity-40">No address</span>}
-            </span>
-            <span className="text-xs font-semibold tabular-nums shrink-0">
-              {r.percentage || '0'}%
-            </span>
-          </div>
-        ))}
+        {recipients.map((r, i) => {
+          const pct = Number(r.percentage) || 0;
+          const usdcxAmt =
+            totalAmountUsdcx != null && pct > 0
+              ? ((pct / 100) * totalAmountUsdcx).toFixed(2)
+              : null;
+          return (
+            <div key={i} className="flex items-center gap-2">
+              <div
+                className="w-2 h-2 rounded-sm shrink-0"
+                style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
+              />
+              <span className="text-xs text-muted-foreground font-mono truncate flex-1 min-w-0">
+                {r.recipientName ? (
+                  <span className="not-mono text-foreground font-medium">{r.recipientName} </span>
+                ) : null}
+                {r.address ? truncateAddr(r.address) : <span className="italic opacity-40">No address</span>}
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {usdcxAmt && (
+                  <span className="text-xs text-muted-foreground tabular-nums">{usdcxAmt} USDCx</span>
+                )}
+                <span className="text-xs font-semibold tabular-nums">{r.percentage || '0'}%</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -301,7 +320,7 @@ function SummaryPanel({
               <p className="text-xs text-muted-foreground mb-0.5">Amount</p>
               <p className="text-sm font-semibold">
                 {lockValues.amountStx ? (
-                  <><span className="text-foreground">{lockValues.amountStx}</span> <span className="text-muted-foreground text-xs">STX</span></>
+                  <><span className="text-foreground">{lockValues.amountStx}</span> <span className="text-muted-foreground text-xs">USDCx</span></>
                 ) : (
                   <span className="text-muted-foreground/40 italic">Not set</span>
                 )}
@@ -329,9 +348,21 @@ function SummaryPanel({
         {/* Split-specific */}
         {!isLock && (
           <>
+            {splitValues.totalAmountUsdcx && Number(splitValues.totalAmountUsdcx) > 0 && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-0.5">Routing Amount</p>
+                <p className="text-sm font-semibold tabular-nums">
+                  {Number(splitValues.totalAmountUsdcx).toFixed(2)}{' '}
+                  <span className="text-muted-foreground text-xs">USDCx</span>
+                </p>
+              </div>
+            )}
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Recipients ({recipientCount})</p>
-              <DistributionBar recipients={splitValues.recipients} />
+              <DistributionBar
+                recipients={splitValues.recipients}
+                totalAmountUsdcx={Number(splitValues.totalAmountUsdcx) > 0 ? Number(splitValues.totalAmountUsdcx) : null}
+              />
             </div>
             <div className="flex items-center justify-between">
               <p className="text-xs text-muted-foreground">Total Allocation</p>
@@ -370,13 +401,21 @@ function LockVaultForm({
   onNext,
   onBack,
   apiError,
+  usdcxBalance,
 }: {
   form: UseFormReturn<LockFormValues>;
   onNext: () => void;
   onBack: () => void;
   apiError?: string;
+  usdcxBalance?: number | null;
 }) {
-  const { register, handleSubmit, formState: { errors } } = form;
+  const { register, handleSubmit, watch, formState: { errors } } = form;
+  const watchedAmount = watch('amountStx');
+  const enteredAmount = Number(watchedAmount) || 0;
+  const remainingBalance =
+    usdcxBalance != null && enteredAmount > 0
+      ? usdcxBalance - enteredAmount
+      : null;
 
   return (
     <form onSubmit={handleSubmit(onNext)} className="space-y-5">
@@ -426,20 +465,42 @@ function LockVaultForm({
           </Field>
 
           <div className="grid sm:grid-cols-2 gap-5">
-            <Field label="Amount to Lock (STX)" error={errors.amountStx?.message}>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.000001"
-                  min="0"
-                  {...register('amountStx', {
-                    required: 'Amount is required',
-                    validate: (v) => Number(v) > 0 || 'Amount must be greater than 0',
-                  })}
-                  className={`${inputCls(!!errors.amountStx)} pr-12`}
-                  placeholder="0.000000"
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-medium">STX</span>
+            <Field
+              label="Amount to Lock (USDCx)"
+              error={errors.amountStx?.message}
+              hint={
+                usdcxBalance != null
+                  ? `Available: ${usdcxBalance.toFixed(2)} USDCx`
+                  : undefined
+              }
+            >
+              <div className="space-y-1.5">
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.000001"
+                    min="0"
+                    {...register('amountStx', {
+                      required: 'Amount is required',
+                      validate: (v) => {
+                        const n = Number(v);
+                        if (n <= 0) return 'Amount must be greater than 0';
+                        if (usdcxBalance != null && n > usdcxBalance)
+                          return `Exceeds available balance (${usdcxBalance.toFixed(2)} USDCx)`;
+                        return true;
+                      },
+                    })}
+                    className={`${inputCls(!!errors.amountStx)} pr-16`}
+                    placeholder="0.000000"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-medium">USDCx</span>
+                </div>
+                {/* Live remaining balance */}
+                {remainingBalance != null && (
+                  <p className={`text-xs tabular-nums ${remainingBalance < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+                    Remaining: {remainingBalance.toFixed(2)} USDCx after lock
+                  </p>
+                )}
               </div>
             </Field>
             <Field label="Duration" error={errors.durationMonths?.message}>
@@ -498,11 +559,13 @@ function SplitVaultForm({
   onNext,
   onBack,
   apiError,
+  usdcxBalance,
 }: {
   form: UseFormReturn<SplitFormValues>;
   onNext: () => void;
   onBack: () => void;
   apiError?: string;
+  usdcxBalance?: number | null;
 }) {
   const {
     register,
@@ -515,10 +578,16 @@ function SplitVaultForm({
 
   const { fields, append, remove } = useFieldArray({ control, name: 'recipients' });
   const watchedRecipients = watch('recipients');
+  const watchedTotalAmount = watch('totalAmountUsdcx');
+  const totalRouteAmount = Number(watchedTotalAmount) || 0;
   const total = watchedRecipients.reduce((sum, r) => sum + (Number(r.percentage) || 0), 0);
   const totalOk = Math.abs(total - 100) < 0.01;
+  const balanceExceeded = usdcxBalance != null && totalRouteAmount > 0 && totalRouteAmount > usdcxBalance;
 
   const handleFormSubmit = (data: SplitFormValues) => {
+    if (usdcxBalance != null && Number(data.totalAmountUsdcx) > usdcxBalance) {
+      return; // Inline balance error already shown — block navigation
+    }
     const pct = data.recipients.reduce((s, r) => s + Number(r.percentage), 0);
     if (Math.abs(pct - 100) >= 0.01) {
       setError('recipients', {
@@ -556,6 +625,55 @@ function SplitVaultForm({
             />
           </Field>
         </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Routing Amount"
+        right={
+          usdcxBalance != null ? (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              Available: <span className="text-foreground font-medium">{usdcxBalance.toFixed(2)} USDCx</span>
+            </span>
+          ) : undefined
+        }
+      >
+        <Field
+          label="Total Amount to Route (USDCx)"
+          error={(errors as Record<string, { message?: string }>).totalAmountUsdcx?.message}
+        >
+          <div className="space-y-1.5">
+            <div className="relative">
+              <input
+                type="number"
+                step="0.000001"
+                min="0"
+                {...register('totalAmountUsdcx', {
+                  required: 'Routing amount is required',
+                  validate: (v) => {
+                    const n = Number(v);
+                    if (n <= 0) return 'Amount must be greater than 0';
+                    if (usdcxBalance != null && n > usdcxBalance)
+                      return `Exceeds available balance (${usdcxBalance.toFixed(2)} USDCx)`;
+                    return true;
+                  },
+                })}
+                className={`${inputCls(balanceExceeded)} pr-16`}
+                placeholder="e.g. 250"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground font-medium">USDCx</span>
+            </div>
+            {balanceExceeded && (
+              <p className="text-xs text-destructive">
+                Insufficient USDCx balance — you have {usdcxBalance!.toFixed(2)} USDCx available.
+              </p>
+            )}
+            {!balanceExceeded && usdcxBalance != null && totalRouteAmount > 0 && (
+              <p className="text-xs text-muted-foreground tabular-nums">
+                Remaining after routing: {(usdcxBalance - totalRouteAmount).toFixed(2)} USDCx
+              </p>
+            )}
+          </div>
+        </Field>
       </SectionCard>
 
       <SectionCard
@@ -666,8 +784,16 @@ function SplitVaultForm({
           {/* Live distribution preview */}
           {watchedRecipients.some((r) => r.address || r.percentage) && (
             <div className="bg-background/30 border border-border/40 rounded-lg p-4 space-y-2.5">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Live Distribution</p>
-              <DistributionBar recipients={watchedRecipients} />
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Live Distribution</p>
+                {totalRouteAmount > 0 && (
+                  <span className="text-xs text-muted-foreground tabular-nums">{totalRouteAmount.toFixed(2)} USDCx total</span>
+                )}
+              </div>
+              <DistributionBar
+                recipients={watchedRecipients}
+                totalAmountUsdcx={totalRouteAmount > 0 ? totalRouteAmount : null}
+              />
             </div>
           )}
         </div>
@@ -727,6 +853,7 @@ export default function CreateVault() {
     defaultValues: {
       name: '',
       description: '',
+      totalAmountUsdcx: '',
       recipients: [{ recipientName: '', address: '', percentage: '100' }],
     },
   });
@@ -736,6 +863,9 @@ export default function CreateVault() {
   const splitValues = splitForm.watch();
 
   const createVault = useCreateVault();
+
+  // USDCx wallet balance — drives live previews and balance validation in forms
+  const { data: usdcxBalance } = useUsdcxBalance(address);
 
   if (!address) {
     setLocation('/');
@@ -762,6 +892,24 @@ export default function CreateVault() {
     setChainVaultState(null);
 
     const isLock = vaultType === 'lock';
+
+    // ── Balance gate: verify routing amount ≤ available USDCx ─────────────────
+    const routeAmount = isLock
+      ? Number(lockValues.amountStx)
+      : Number(splitValues.totalAmountUsdcx);
+    if (usdcxBalance === null) {
+      // Balance fetch failed — block execution for safety
+      setExecuteError(
+        'Unable to verify your USDCx balance. Please refresh the page and try again before executing.'
+      );
+      return;
+    }
+    if (usdcxBalance !== undefined && routeAmount > 0 && routeAmount > usdcxBalance) {
+      setExecuteError(
+        `Insufficient USDCx balance. You have ${usdcxBalance.toFixed(2)} USDCx available but are trying to route ${routeAmount.toFixed(2)} USDCx.`
+      );
+      return;
+    }
 
     const payload = isLock
       ? {
@@ -855,6 +1003,21 @@ export default function CreateVault() {
     setChainVaultState(null);
 
     const isLock = vaultType === 'lock';
+
+    // ── Balance gate (same as handleConfirmExecute) ───────────────────────────
+    const retryRouteAmount = isLock
+      ? Number(lockValues.amountStx)
+      : Number(splitValues.totalAmountUsdcx);
+    if (usdcxBalance === null) {
+      setTxError('Unable to verify your USDCx balance. Please refresh the page and try again.');
+      return;
+    }
+    if (usdcxBalance !== undefined && retryRouteAmount > 0 && retryRouteAmount > usdcxBalance) {
+      setTxError(
+        `Insufficient USDCx balance. You have ${usdcxBalance.toFixed(2)} USDCx available but are trying to route ${retryRouteAmount.toFixed(2)} USDCx.`
+      );
+      return;
+    }
 
     try {
       const client = getClient();
@@ -1005,12 +1168,14 @@ export default function CreateVault() {
                 form={lockForm}
                 onNext={handleConfigureNext}
                 onBack={() => setStep(1)}
+                usdcxBalance={usdcxBalance ?? null}
               />
             ) : (
               <SplitVaultForm
                 form={splitForm}
                 onNext={handleConfigureNext}
                 onBack={() => setStep(1)}
+                usdcxBalance={usdcxBalance ?? null}
               />
             )}
           </div>
@@ -1089,7 +1254,7 @@ export default function CreateVault() {
           {isLock && (
             <SectionCard title="Lock Configuration">
               <div className="space-y-0">
-                <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+                <ReviewRow label="Amount to Lock" value={`${lockValues.amountStx} USDCx`} />
                 <ReviewRow
                   label="Recipient Address"
                   value={<span className="font-mono text-xs break-all">{lockValues.recipientAddress}</span>}
@@ -1116,25 +1281,49 @@ export default function CreateVault() {
               }
             >
               <div className="space-y-3">
-                {splitValues.recipients.map((r, i) => (
-                  <div key={i} className="flex items-start gap-3 py-2.5 border-b border-card-border/50 last:border-0">
-                    <div
-                      className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
-                      style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
-                    />
-                    <div className="flex-1 min-w-0 space-y-0.5">
-                      {r.recipientName && (
-                        <p className="text-sm font-medium">{r.recipientName}</p>
-                      )}
-                      <p className="text-xs font-mono text-muted-foreground break-all">{r.address}</p>
-                    </div>
-                    <span className="text-sm font-semibold tabular-nums shrink-0">{r.percentage}%</span>
+                {/* Routing amount summary */}
+                {splitValues.totalAmountUsdcx && Number(splitValues.totalAmountUsdcx) > 0 && (
+                  <div className="flex items-center justify-between py-2 border-b border-card-border/50">
+                    <span className="text-sm text-muted-foreground">Total Routing Amount</span>
+                    <span className="text-sm font-semibold tabular-nums">{Number(splitValues.totalAmountUsdcx).toFixed(2)} USDCx</span>
                   </div>
-                ))}
+                )}
+
+                {/* Recipients breakdown */}
+                {splitValues.recipients.map((r, i) => {
+                  const pct = Number(r.percentage) || 0;
+                  const usdcxAmt =
+                    Number(splitValues.totalAmountUsdcx) > 0 && pct > 0
+                      ? ((pct / 100) * Number(splitValues.totalAmountUsdcx)).toFixed(2)
+                      : null;
+                  return (
+                    <div key={i} className="flex items-start gap-3 py-2.5 border-b border-card-border/50 last:border-0">
+                      <div
+                        className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
+                        style={{ backgroundColor: RECIPIENT_COLORS[i % RECIPIENT_COLORS.length] }}
+                      />
+                      <div className="flex-1 min-w-0 space-y-0.5">
+                        {r.recipientName && (
+                          <p className="text-sm font-medium">{r.recipientName}</p>
+                        )}
+                        <p className="text-xs font-mono text-muted-foreground break-all">{r.address}</p>
+                      </div>
+                      <div className="text-right shrink-0 space-y-0.5">
+                        <p className="text-sm font-semibold tabular-nums">{r.percentage}%</p>
+                        {usdcxAmt && (
+                          <p className="text-xs text-muted-foreground tabular-nums">{usdcxAmt} USDCx</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
 
                 {/* Distribution bar in review */}
                 <div className="pt-1">
-                  <DistributionBar recipients={splitValues.recipients} />
+                  <DistributionBar
+                    recipients={splitValues.recipients}
+                    totalAmountUsdcx={Number(splitValues.totalAmountUsdcx) > 0 ? Number(splitValues.totalAmountUsdcx) : null}
+                  />
                 </div>
               </div>
             </SectionCard>
@@ -1242,7 +1431,7 @@ export default function CreateVault() {
             <ReviewRow label="Primitive" value={isLock ? 'Lock Vault' : 'Split Vault'} />
             {isLock && (
               <>
-                <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+                <ReviewRow label="Amount to Lock" value={`${lockValues.amountStx} USDCx`} />
                 <ReviewRow
                   label="Recipient"
                   value={<span className="font-mono text-xs">{truncateAddr(lockValues.recipientAddress)}</span>}
@@ -1254,6 +1443,12 @@ export default function CreateVault() {
             )}
             {!isLock && (
               <>
+                {splitValues.totalAmountUsdcx && Number(splitValues.totalAmountUsdcx) > 0 && (
+                  <ReviewRow
+                    label="Routing Amount"
+                    value={`${Number(splitValues.totalAmountUsdcx).toFixed(2)} USDCx`}
+                  />
+                )}
                 <ReviewRow label="Recipients" value={`${splitValues.recipients.length} addresses`} />
                 <ReviewRow
                   label="Total Allocation"
@@ -1498,9 +1693,12 @@ function SuccessScreen({
           <ReviewRow label="Creator" value={<span className="font-mono text-xs">{truncateAddr(address)}</span>} />
           {isLock && (
             <>
-              <ReviewRow label="Amount" value={`${lockValues.amountStx} STX`} />
+              <ReviewRow label="Amount Locked" value={`${lockValues.amountStx} USDCx`} />
               <ReviewRow label="Duration" value={`${lockValues.durationMonths} months`} />
             </>
+          )}
+          {!isLock && splitValues.totalAmountUsdcx && Number(splitValues.totalAmountUsdcx) > 0 && (
+            <ReviewRow label="Routing Amount" value={`${Number(splitValues.totalAmountUsdcx).toFixed(2)} USDCx`} />
           )}
         </div>
       </div>

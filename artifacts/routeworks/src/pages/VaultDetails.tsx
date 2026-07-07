@@ -468,7 +468,7 @@ export default function VaultDetails() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <OverviewCard
           label="Current Balance"
-          value={`${vault.balance.toLocaleString()} STX`}
+          value={`${vault.balance.toLocaleString()} USDCx`}
           sub="Available in vault"
           accent
         />
@@ -476,17 +476,17 @@ export default function VaultDetails() {
           <>
             <OverviewCard
               label="Locked Amount"
-              value={`${lock.amountStx.toLocaleString()} STX`}
+              value={`${lock.amountStx.toLocaleString()} USDCx`}
               sub="Total committed"
             />
             <OverviewCard
               label="Total Released"
-              value={`${totalReleased.toLocaleString()} STX`}
+              value={`${totalReleased.toLocaleString()} USDCx`}
               sub={`${progressPct.toFixed(1)}% of locked`}
             />
             <OverviewCard
               label="Remaining Locked"
-              value={`${vault.balance.toLocaleString()} STX`}
+              value={`${vault.balance.toLocaleString()} USDCx`}
               sub={finalDate ? `Until ${finalDate.toLocaleDateString()}` : undefined}
             />
           </>
@@ -499,7 +499,7 @@ export default function VaultDetails() {
             />
             <OverviewCard
               label="Total Distributed"
-              value={`${totalReleased.toLocaleString()} STX`}
+              value={`${totalReleased.toLocaleString()} USDCx`}
               sub="Lifetime payouts"
             />
             <OverviewCard
@@ -556,7 +556,7 @@ export default function VaultDetails() {
             <SectionHeader title="Release Rules" sub="Automated schedule for fund distribution" />
             <div className="bg-card border border-card-border rounded-xl px-5 py-2">
               <InfoRow icon={<Coins className="w-4 h-4" />} label="Locked Amount">
-                <span className="text-primary font-semibold">{lock.amountStx.toLocaleString()} STX</span>
+                <span className="text-primary font-semibold">{lock.amountStx.toLocaleString()} USDCx</span>
               </InfoRow>
               <InfoRow icon={<RefreshCw className="w-4 h-4" />} label="Release Schedule">
                 {formatScheduleLabel(lock.releaseSchedule)}
@@ -636,11 +636,11 @@ export default function VaultDetails() {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-2">
               <div className="text-center p-3 bg-muted/30 rounded-lg border border-card-border">
                 <p className="text-xs text-muted-foreground mb-1">Released</p>
-                <p className="text-base font-semibold text-green-400">{totalReleased.toLocaleString()} STX</p>
+                <p className="text-base font-semibold text-green-400">{totalReleased.toLocaleString()} USDCx</p>
               </div>
               <div className="text-center p-3 bg-muted/30 rounded-lg border border-card-border">
                 <p className="text-xs text-muted-foreground mb-1">Remaining</p>
-                <p className="text-base font-semibold text-primary">{vault.balance.toLocaleString()} STX</p>
+                <p className="text-base font-semibold text-primary">{vault.balance.toLocaleString()} USDCx</p>
               </div>
               {nextDate && (
                 <div className="text-center p-3 bg-muted/30 rounded-lg border border-card-border col-span-2 sm:col-span-1">
@@ -673,7 +673,7 @@ export default function VaultDetails() {
               <div className="grid grid-cols-3 gap-6 sm:text-right">
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Total Amount</p>
-                  <p className="text-sm font-semibold">{lock.amountStx.toLocaleString()} STX</p>
+                  <p className="text-sm font-semibold">{lock.amountStx.toLocaleString()} USDCx</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1">Schedule</p>
@@ -718,7 +718,7 @@ export default function VaultDetails() {
                             <p className="text-sm font-medium leading-snug">{event.description}</p>
                             {event.amount != null && (
                               <span className="text-xs font-semibold text-primary shrink-0">
-                                {event.amount > 0 ? '+' : ''}{event.amount.toLocaleString()} STX
+                                {event.amount > 0 ? '+' : ''}{event.amount.toLocaleString()} USDCx
                               </span>
                             )}
                           </div>
@@ -772,7 +772,7 @@ export default function VaultDetails() {
                           {txCfg?.label ?? tx.eventType}
                         </span>
                         <span className="text-xs font-semibold text-right text-primary">
-                          {tx.amount != null ? `${tx.amount > 0 ? '+' : ''}${tx.amount.toLocaleString()} STX` : '—'}
+                          {tx.amount != null ? `${tx.amount > 0 ? '+' : ''}${tx.amount.toLocaleString()} USDCx` : '—'}
                         </span>
                         <div className="flex justify-end">
                           <span className="inline-flex items-center gap-1 text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-2 py-0.5 rounded">

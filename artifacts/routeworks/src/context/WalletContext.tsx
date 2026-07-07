@@ -41,10 +41,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [network, setNetwork] = useState<NetworkType>(() => {
-    const saved = localStorage.getItem('routeworks-network');
-    return saved === 'testnet' ? 'testnet' : 'mainnet';
-  });
+  // RouteWorks operates exclusively on Stacks Testnet.
+  // The switchNetwork function is preserved so Mainnet can be reintroduced later
+  // without refactoring — just add the network UI back in App.tsx.
+  const [network, setNetwork] = useState<NetworkType>('testnet');
 
   // Restore session from localStorage on mount
   useEffect(() => {

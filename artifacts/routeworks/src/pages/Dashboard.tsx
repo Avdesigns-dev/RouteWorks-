@@ -2,14 +2,31 @@ import { useWallet } from '@/context/WalletContext';
 import { useGetVaultStats, useListVaults, useListActivity, getGetVaultStatsQueryKey, getListVaultsQueryKey, getListActivityQueryKey } from '@workspace/api-client-react';
 import { Link } from 'wouter';
 import { ArrowRight, Lock, Split, ArrowUpRight, CheckCircle2, PauseCircle, Layers, FileClock } from 'lucide-react';
+import { useUsdcxBalance } from '@/hooks/useUsdcxBalance';
+import { useFlowVault } from '@/hooks/useFlowVault';
+import { useQuery } from '@tanstack/react-query';
 
 export default function Dashboard() {
   const { address, isConnected, isConnecting, connect } = useWallet();
+  const { getClient, isReady } = useFlowVault();
   const listVaultsParams = { ownerAddress: address || '' };
   const listActivityParams = { ownerAddress: address || '', limit: 10 };
   const { data: stats } = useGetVaultStats({ ownerAddress: address || '' }, { query: { enabled: !!address, queryKey: getGetVaultStatsQueryKey({ ownerAddress: address || '' }) } });
   const { data: vaults, isLoading: isLoadingVaults } = useListVaults(listVaultsParams, { query: { enabled: !!address, queryKey: getListVaultsQueryKey(listVaultsParams) } });
   const { data: activity } = useListActivity(listActivityParams, { query: { enabled: !!address, queryKey: getListActivityQueryKey(listActivityParams) } });
+
+  // USDCx wallet balance (Hiro Stacks Testnet API)
+  const { data: walletUsdcx, isLoading: isLoadingBalance } = useUsdcxBalance(address);
+
+  // FlowVault vault state — locked / unlocked balances from chain
+  const { data: chainState } = useQuery({
+    queryKey: ['dashboardVaultState', address],
+    queryFn: () => getClient().getVaultState(address!),
+    enabled: isReady && !!address,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  });
 
   if (!isConnected) {
     return (
@@ -57,10 +74,33 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Total Balance" value={stats ? `${stats.totalBalance} STX` : '0 STX'} />
-        <StatCard title="Active Vaults" value={stats?.activeVaults || 0} />
-        <StatCard title="Upcoming Payments" value={stats?.upcomingPayments || 0} />
-        <StatCard title="Total Distributed" value={stats ? `${stats.totalDistributed} STX` : '0 STX'} />
+        <StatCard
+          title="Available USDCx"
+          value={
+            isLoadingBalance
+              ? '…'
+              : walletUsdcx != null
+              ? `${walletUsdcx.toFixed(2)} USDCx`
+              : '—'
+          }
+        />
+        <StatCard title="Active Routings" value={stats?.activeVaults || 0} />
+        <StatCard
+          title="Locked USDCx"
+          value={
+            chainState
+              ? `${(chainState.lockedBalance / 1_000_000).toFixed(2)} USDCx`
+              : '—'
+          }
+        />
+        <StatCard
+          title="Unlocked USDCx"
+          value={
+            chainState
+              ? `${(chainState.unlockedBalance / 1_000_000).toFixed(2)} USDCx`
+              : '—'
+          }
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -105,7 +145,7 @@ export default function Dashboard() {
                     <div className="mt-auto pt-4 border-t border-card-border/50 flex items-center justify-between">
                       <div>
                         <p className="text-xs text-muted-foreground mb-0.5">Balance</p>
-                        <p className="text-sm font-semibold">{vault.balance} STX</p>
+                        <p className="text-sm font-semibold">{vault.balance} USDCx</p>
                       </div>
                       <div className="flex items-center gap-1.5 text-xs font-medium">
                         {vault.status === 'active' && <span className="text-green-500 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Active</span>}

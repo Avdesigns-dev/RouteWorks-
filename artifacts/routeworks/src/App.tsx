@@ -13,7 +13,7 @@ import { Boxes, LogOut } from 'lucide-react';
 const queryClient = new QueryClient();
 
 function Layout({ children }: { children: React.ReactNode }) {
-  const { isConnected, address, network, switchNetwork, disconnect } = useWallet();
+  const { isConnected, address, disconnect } = useWallet();
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background text-foreground">
@@ -23,24 +23,16 @@ function Layout({ children }: { children: React.ReactNode }) {
             <Boxes className="w-6 h-6" />
             <span className="font-bold text-lg tracking-tight text-foreground">RouteWorks</span>
           </Link>
-          
-          {isConnected && (
-            <div className="flex items-center gap-4">
-              <div className="flex items-center bg-input/50 rounded-md p-1 border border-border">
-                <button 
-                  onClick={() => switchNetwork('mainnet')}
-                  className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors ${network === 'mainnet' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  Mainnet
-                </button>
-                <button 
-                  onClick={() => switchNetwork('testnet')}
-                  className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors ${network === 'testnet' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  Testnet
-                </button>
-              </div>
-              <div className="flex items-center gap-3 pl-4 border-l border-border">
+
+          <div className="flex items-center gap-3">
+            {/* Stacks Testnet badge — always shown */}
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              Stacks Testnet
+            </span>
+
+            {isConnected && (
+              <div className="flex items-center gap-3 pl-3 border-l border-border">
                 <div className="text-sm font-mono bg-muted px-2.5 py-1 rounded text-muted-foreground">
                   {address?.substring(0, 5)}...{address?.substring(address.length - 4)}
                 </div>
@@ -48,8 +40,8 @@ function Layout({ children }: { children: React.ReactNode }) {
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </header>
       <main className="flex-1">

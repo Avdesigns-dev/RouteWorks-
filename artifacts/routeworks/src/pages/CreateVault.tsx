@@ -938,35 +938,37 @@ export default function CreateVault() {
     // ── Step 1: Persist routing config to RouteWorks API ──────────────────────
     let vaultId: number;
     try {
+      console.debug('[RouteWorks] POST /api/vaults payload:', payload);
       const data = await createVault.mutateAsync({ data: payload });
       queryClient.invalidateQueries({ queryKey: getListVaultsQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetVaultStatsQueryKey() });
       vaultId = (data as { id?: number }).id!;
       setCreatedVaultId(vaultId);
     } catch (err: unknown) {
+      console.error('[RouteWorks] Failed to create vault. Payload:', payload, 'Error:', err);
       setExecuteError((err as Error)?.message ?? 'Failed to save routing configuration. Please try again.');
       return;
     }
 
     // ── Step 2: Execute FlowVault on-chain transaction ────────────────────────
+    const fvParams = isLock
+      ? {
+          type: 'lock' as const,
+          amountStx: Number(lockValues.amountStx),
+          durationMonths: Number(lockValues.durationMonths),
+          walletAddress: address!,
+        }
+      : {
+          type: 'split' as const,
+          recipients: splitValues.recipients.map((r) => ({
+            address: r.address,
+            percentage: Number(r.percentage),
+          })),
+          walletAddress: address!,
+        };
+
     try {
       const client = getClient();
-
-      const fvParams = isLock
-        ? {
-            type: 'lock' as const,
-            amountStx: Number(lockValues.amountStx),
-            durationMonths: Number(lockValues.durationMonths),
-            walletAddress: address!,
-          }
-        : {
-            type: 'split' as const,
-            recipients: splitValues.recipients.map((r) => ({
-              address: r.address,
-              percentage: Number(r.percentage),
-            })),
-            walletAddress: address!,
-          };
 
       const result = await executeFlowVaultTransaction(
         client,
@@ -984,6 +986,7 @@ export default function CreateVault() {
 
       setStep(4);
     } catch (err: unknown) {
+      console.error('[RouteWorks] FlowVault transaction failed. Params:', fvParams, 'Error:', err);
       if (isUserRejection(err)) {
         setTxPhase('rejected');
         setTxError('Transaction cancelled — you rejected the wallet signature request. You can retry below.');

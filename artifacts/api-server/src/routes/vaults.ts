@@ -192,9 +192,14 @@ router.get("/vaults/:id", async (req, res) => {
 
 // Create vault — transactional with full server-side invariant validation
 router.post("/vaults", async (req, res) => {
+  req.log.info({ body: req.body }, "Create vault request received");
   try {
     const parsed = CreateVaultBody.safeParse(req.body);
     if (!parsed.success) {
+      req.log.warn(
+        { body: req.body, issues: parsed.error.issues },
+        "Create vault request failed validation",
+      );
       res.status(400).json({ error: parsed.error.message });
       return;
     }
@@ -303,7 +308,10 @@ router.post("/vaults", async (req, res) => {
       updatedAt: vault.updatedAt.toISOString(),
     });
   } catch (err) {
-    req.log.error({ err }, "Failed to create vault");
+    req.log.error(
+      { err, body: req.body, message: (err as Error)?.message, stack: (err as Error)?.stack },
+      "Failed to create vault",
+    );
     res.status(500).json({ error: "Internal server error" });
   }
 });
